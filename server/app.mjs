@@ -1,0 +1,206 @@
+import express from 'express';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import cookieParser from 'cookie-parser';
+import { randomBytes } from 'node:crypto';
+import { security, verifyPassword } from './security.mjs';
+import { openStore } from './store.mjs';
+import { createSchema, querySchema, lookupSchema, settingsSchema, parse } from './validation.mjs';
+
+export const UPSTREAM = 'https://admin-lm.zdhxylc.shop/api/v1';
+const active = ['submitting', 'unknown', 'pending', 'processing', 'pending_verification'];
+const statuses = [...active, 'success', 'failed'];
+const canonical = v => JSON.stringify(v && typeof v === 'object' ? (Array.isArray(v) ? v.map(x => JSON.parse(canonical(x))) : Object.fromEntries(Object.keys(v).sort().map(k => [k, JSON.parse(canonical(v[k]))]))) : v);
+const safeText = value => typeof value === 'string' ? value.replace(/eyJ[A-Za-z0-9_.-]{20,}/g, '[已隐藏凭据]').replace(/\b\d{12,19}\b/g, '[已隐藏卡号]').slice(0, 500) : null;
+function cleanOrder(data) {
+  if (!data || typeof data.order_no !== 'string' || !/^[a-f\d-]{36}$/i.test(data.order_no) || !statuses.includes(data.status)) throw fault(502, '上游订单响应格式异常，请使用原提交标识重试', 'UPSTREAM_INVALID');
+  const order = { order_no: data.order_no, status: data.status };
+  for (const k of ['order_type', 'country', 'plan_type', 'email', 'payment_amount', 'payment_currency', 'failure_reason', 'subscription_verification_state', 'subscription_verification_reason', 'retry_batch_no', 'finished_at', 'created_at', 'updated_at']) {
+    order[k] = safeText(data[k]);
+  }
+  order.payment_confirmed = data.payment_confirmed === true;
+  order.is_subscription_cancelled = data.is_subscription_cancelled === 1 ? 1 : 0;
+  order.retry_attempt = Number.isInteger(data.retry_attempt) ? data.retry_attempt : null;
+  return order;
+}
+export function fault(status, message, code = 'REQUEST_ERROR') { return Object.assign(new Error(message), { status, code }); }
+export function createApp({ config, fetcher = fetch }) {
+  const crypto = security(config);
+  const store = openStore(config, crypto);
+  const { db } = store;
+  const app = express();
+  app.disable('x-powered-by');
+  if (config.trustProxy) app.set('trust proxy', 1);
+  app.use(helmet({ xFrameOptions: { action: 'deny' }, contentSecurityPolicy: { directives: {
+    defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"], imgSrc: ["'self'", 'data:'], connectSrc: ["'self'"],
+    fontSrc: ["'self'"], objectSrc: ["'none'"], frameAncestors: ["'none'"], baseUri: ["'self'"], formAction: ["'self'"], upgradeInsecureRequests: config.secure ? [] : null,
+  } }, strictTransportSecurity: config.secure ? { maxAge: 31536000, includeSubDomains: true } : false, referrerPolicy: { policy: 'no-referrer' } }));
+  app.use('/api', (req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+  const limiter = (limit, windowMs = 60000) => rateLimit({ windowMs, limit, standardHeaders: 'draft-8', legacyHeaders: false,
+    message: { error: { code: 'RATE_LIMIT', message: '操作过于频繁，请稍后再试。' } } });
+  app.use('/api', limiter(100));
+  app.use(express.json({ limit: '512kb', strict: true }));
+  app.use(cookieParser());
+  const cookieName = config.secure ? '__Host-limen_session' : 'limen_session';
+  const cookieOptions = { httpOnly: true, secure: config.secure, sameSite: 'strict', path: '/', maxAge: 30 * 86400000 };
+  function issueSession(res, owner, admin = 0) {
+    const raw = randomBytes(32).toString('base64url');
+    const id = crypto.hash(raw);
+    const session = { id, owner: owner || randomBytes(24).toString('hex'), admin, expires: Date.now() + cookieOptions.maxAge, password_tag: crypto.hash(config.passwordHash) };
+    db.prepare('INSERT INTO sessions(id,owner,admin,expires,password_tag) VALUES(?,?,?,?,?)').run(id, session.owner, admin, session.expires, session.password_tag);
+    res.cookie(cookieName, raw, cookieOptions);
+    return { session, csrf: crypto.hash(`csrf:${raw}`) };
+  }
+  app.use('/api', (req, res, next) => {
+    const raw = req.cookies[cookieName];
+    const session = typeof raw === 'string' && raw.length < 200 ? db.prepare('SELECT * FROM sessions WHERE id=? AND expires>?').get(crypto.hash(raw), Date.now()) : null;
+    if (session) { req.session = session; req.csrf = crypto.hash(`csrf:${raw}`); }
+    else { const issued = issueSession(res); req.session = issued.session; req.csrf = issued.csrf; }
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+      if (req.get('origin') && req.get('origin') !== config.origin) return next(fault(403, '请求来源不被允许', 'ORIGIN_REJECTED'));
+      if (req.get('x-csrf-token') !== req.csrf) return next(fault(403, '会话校验失败，请刷新页面后重试', 'CSRF_REJECTED'));
+      if (!req.is('application/json')) return next(fault(415, '请使用 JSON 格式提交'));
+    }
+    next();
+  });
+  const isAdmin = req => req.session.admin > Date.now() && req.session.password_tag === crypto.hash(config.passwordHash);
+  const adminOnly = (req, res, next) => isAdmin(req) ? next() : next(fault(401, '请先登录管理后台', 'ADMIN_REQUIRED'));
+  const publicSettings = () => { const { apiKey, ...settings } = store.settings(); return { ...settings, configured: !!apiKey }; };
+  app.get('/api/session', (req, res) => res.json({ csrfToken: req.csrf, admin: isAdmin(req), settings: publicSettings() }));
+  app.get('/api/health', (_req, res) => res.json({ ok: true }));
+  app.post('/api/admin/login', limiter(8, 15 * 60000), async (req, res) => {
+    if (!(await verifyPassword(req.body?.password, config.passwordHash))) { store.audit('login_failed'); throw fault(401, '管理员密码不正确', 'INVALID_LOGIN'); }
+    const issued = issueSession(res, req.session.owner, Date.now() + 8 * 3600000);
+    db.prepare('DELETE FROM sessions WHERE id=?').run(req.session.id);
+    store.audit('login_success');
+    res.json({ csrfToken: issued.csrf, admin: true });
+  });
+  app.post('/api/admin/logout', adminOnly, (req, res) => {
+    const issued = issueSession(res, req.session.owner);
+    db.prepare('DELETE FROM sessions WHERE id=?').run(req.session.id);
+    store.audit('logout'); res.json({ csrfToken: issued.csrf, admin: false });
+  });
+  app.get('/api/admin/settings', adminOnly, (_req, res) => res.json({ ...publicSettings(), apiBase: UPSTREAM }));
+  app.put('/api/admin/settings', adminOnly, (req, res) => {
+    const value = parse(settingsSchema, req.body);
+    const { clearApiKey, apiKey, ...other } = value;
+    const existing = store.settings();
+    store.saveSettings({ ...existing, ...other, apiKey: clearApiKey ? '' : apiKey || existing.apiKey });
+    store.audit(apiKey || clearApiKey ? 'settings_and_key_updated' : 'settings_updated');
+    res.json(publicSettings());
+  });
+  // A shared budget keeps all visitors together below the provider's 120/IP/min limit.
+  let requests = [];
+  async function upstream(endpoint, body, idempotencyKey) {
+    const apiKey = store.settings().apiKey;
+    if (!apiKey) throw fault(503, '服务尚未配置，请联系商家完成 API 配置', 'NOT_CONFIGURED');
+    const now = Date.now(); requests = requests.filter(t => t > now - 60000);
+    if (requests.length >= 100) throw fault(429, '当前服务繁忙，请稍后使用相同提交标识重试', 'UPSTREAM_BUDGET');
+    requests.push(now);
+    let response;
+    try {
+      response = await fetcher(`${UPSTREAM}${endpoint}`, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(25000),
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey, ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}) }, body: JSON.stringify(body) });
+    } catch { throw fault(504, '连接超时或中断，结果尚未确定。请保留原内容并使用相同提交标识重试，切勿重复创建订单。', 'RESULT_UNKNOWN'); }
+    let payload;
+    try { payload = await response.json(); } catch { throw fault(502, '上游响应异常，请保留原提交标识后重试', 'RESULT_UNKNOWN'); }
+    if (!response.ok || payload.code !== 0) {
+      const messages = {
+        40106: '商户 API Key 缺失，请联系商家', 40107: '商户 API Key 无效，请联系商家更新', 40301: '商户已停用，请联系商家',
+        40022: '商户积分不足，请联系商家', 40012: '暂无可用卡片，请联系商家', 40020: '账号预检失败，请检查 Session、套餐及账号状态',
+        40009: '卡密或账号校验未通过，请检查信息或联系商家', 40402: '卡密不存在或不属于当前商户', 40403: '未找到匹配订单',
+        40902: '卡密已使用，请查询原订单', 40903: '卡密不可用或已停用', 40904: '提交标识与原始内容不一致，请恢复原始内容',
+        42902: '上游请求过于频繁，请稍后重试', 42200: '请求字段格式无效，请检查后重试',
+      };
+      const invalidToken = [40005,40006,40007,40008,40024,40025,40026,40027].includes(payload.code);
+      const uncertain = response.status >= 500 || typeof payload.code !== 'number' || payload.code === 0;
+      const error = fault(response.status >= 500 ? 503 : response.status >= 400 ? response.status : 502,
+        messages[payload.code] || (invalidToken ? 'Session 无效或已过期，请重新获取完整 Session' : '上游暂时无法完成请求，请保留原提交标识并联系商家'), uncertain ? 'RESULT_UNKNOWN' : `UPSTREAM_${payload.code}`);
+      throw error;
+    }
+    return payload.data;
+  }
+  function rememberOrder(data, owner) { const order = cleanOrder(data); store.saveOrder(order, owner); return order; }
+  app.post('/api/orders', limiter(60, 3600000), async (req, res) => {
+    const input = parse(createSchema, req.body);
+    if (input.orderType === 'direct' && !isAdmin(req)) throw fault(403, '银行卡直充仅限管理员使用', 'ADMIN_REQUIRED');
+    const settings = store.settings();
+    if (settings.maintenance) throw fault(503, '兑换服务暂时维护中，请稍后再试', 'MAINTENANCE');
+    if (!settings.apiKey) throw fault(503, '服务尚未配置，请联系商家完成 API 配置', 'NOT_CONFIGURED');
+    if (req.get('x-batch-mode') === '1' && !settings.allowBatch) throw fault(403, '批量提交暂未开放');
+    const clientKey = req.get('idempotency-key') || '';
+    if (!/^[A-Za-z\d_-]{1,128}$/.test(clientKey)) throw fault(422, '必须提供有效的 Idempotency-Key 提交标识');
+    const id = crypto.hash(`${req.session.owner}:${clientKey}`);
+    const digest = crypto.hash(canonical(input));
+    const existing = db.prepare('SELECT * FROM submissions WHERE id=?').get(id);
+    if (existing && existing.digest !== digest) throw fault(409, '同一提交标识的内容不能改变', 'IDEMPOTENCY_CONFLICT');
+    if (existing?.order_no) {
+      const row = db.prepare('SELECT payload FROM orders WHERE order_no=?').get(existing.order_no);
+      return res.json({ order: crypto.decrypt(row.payload), reused: true });
+    }
+    if (existing?.state === 'submitting') throw fault(409, '原请求正在提交，请等待后查询', 'IN_FLIGHT');
+    const cardHash = input.orderType === 'card_key' ? crypto.hash(input.cardKey) : null;
+    const accountHash = crypto.hash(input.token.account.id);
+    if (!existing) {
+      const accountLock = db.prepare(`SELECT id FROM submissions WHERE account_hash=? AND state IN ('submitting','unknown','pending','processing','pending_verification')`).get(accountHash);
+      const cardLock = cardHash && db.prepare("SELECT id FROM submissions WHERE card_hash=? AND state!='failed'").get(cardHash);
+      if (accountLock || cardLock) throw fault(409, '此卡密或账号已有订单或未确定的提交，请先查询原订单；待核验时不要重复充值。', 'ORDER_LOCKED');
+      db.prepare('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?)').run(id, req.session.owner, digest, cardHash, accountHash, 'submitting', null, Date.now());
+    } else db.prepare('UPDATE submissions SET state=? WHERE id=?').run('submitting', id);
+    try {
+      const data = await upstream('/third-party/orders/direct', input, id);
+      const order = rememberOrder(data, req.session.owner);
+      db.prepare('UPDATE submissions SET order_no=?,state=? WHERE id=?').run(order.order_no, order.status, id);
+      store.audit('order_created'); res.status(201).json({ order });
+    } catch (error) {
+      if (existing?.state === 'unknown' || ['RESULT_UNKNOWN', 'UPSTREAM_INVALID'].includes(error.code) || !error.status) db.prepare('UPDATE submissions SET state=? WHERE id=?').run('unknown', id);
+      else db.prepare('DELETE FROM submissions WHERE id=?').run(id);
+      throw error;
+    }
+  });
+  app.post('/api/orders/query', async (req, res) => {
+    const input = parse(querySchema, req.body);
+    const ids = Array.isArray(input.order_no) ? input.order_no : [input.order_no];
+    if (!isAdmin(req)) {
+      for (const id of ids) if (!db.prepare('SELECT order_no FROM orders WHERE order_no=? AND owner=?').get(id, req.session.owner)) throw fault(404, '未找到当前浏览器的订单，请核对订单号，跨设备查询请联系商家', 'ORDER_NOT_FOUND');
+    }
+    const result = await upstream('/third-party/orders/query', input);
+    const rows = Array.isArray(result) ? result : result ? [result] : [];
+    const orders = rows.filter(row => ids.includes(row.order_no)).map(data => {
+      const current = db.prepare('SELECT owner FROM orders WHERE order_no=?').get(data.order_no);
+      return rememberOrder(data, current?.owner || req.session.owner);
+    });
+    res.json({ orders });
+  });
+  app.get('/api/orders', (req, res) => {
+    const rows = db.prepare('SELECT payload FROM orders WHERE owner=? ORDER BY created DESC LIMIT 100').all(req.session.owner);
+    res.json({ orders: rows.map(row => crypto.decrypt(row.payload)) });
+  });
+  app.post('/api/admin/lookup', adminOnly, async (req, res) => {
+    const input = parse(lookupSchema, req.body);
+    const result = await upstream('/third-party/orders/lookup', input);
+    if (!Array.isArray(result)) throw fault(502, '补查响应格式异常');
+    const orders = result.map(data => {
+      const current = db.prepare('SELECT owner FROM orders WHERE order_no=?').get(data.order_no);
+      return rememberOrder(data, current?.owner || req.session.owner);
+    });
+    store.audit('order_lookup'); res.json({ orders });
+  });
+  app.get('/api/admin/overview', adminOnly, (_req, res) => {
+    const counts = db.prepare('SELECT status,COUNT(*) AS total FROM orders GROUP BY status').all();
+    res.json({ counts, recentOrders: db.prepare('SELECT payload FROM orders ORDER BY created DESC LIMIT 100').all().map(row => crypto.decrypt(row.payload)),
+      audit: db.prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 20').all(),
+      unresolved: db.prepare("SELECT COUNT(*) AS total FROM submissions WHERE state='unknown'").get().total });
+  });
+  app.use('/api', (_req, _res, next) => next(fault(404, '接口不存在')));
+  // Recover interrupted process requests with their original upstream idempotency keys.
+  db.prepare("UPDATE submissions SET state='unknown' WHERE state='submitting'").run();
+  const cleanup = setInterval(() => db.prepare('DELETE FROM sessions WHERE expires<?').run(Date.now()), 3600000);
+  cleanup.unref();
+  const errorHandler = (error, _req, res, _next) => {
+    const status = error.type === 'entity.too.large' ? 413 : error.type === 'entity.parse.failed' ? 400 : error.status || 500;
+    const message = status === 413 ? '提交内容过大，请减少批量数量' : error.type === 'entity.parse.failed' ? 'JSON 格式错误' : status >= 500 && !error.status ? '服务器暂时无法处理请求' : error.message;
+    res.status(status).json({ error: { code: error.code || 'REQUEST_ERROR', message } });
+  };
+  return { app, store, errorHandler, close() { clearInterval(cleanup); store.close(); } };
+}

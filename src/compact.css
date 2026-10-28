@@ -1,0 +1,162 @@
+/* Make supporting copy readable without increasing visual weight. */
+:root { --muted: #52634f; }
+body { color: #26392f; }
+input::placeholder, textarea::placeholder { color: #687867; font-size: 13px; opacity: 1; }
+.field-hint, .guide-step p, .privacy-card p, .help-note p,
+.confirmation > p, .form-footnote, .status-guide p, .toggle-row p,
+.settings-title p, .admin-welcome p, .stat-card > span,
+.direct-form > .muted, .lookup-form > .muted, .admin-query > p,
+.faq details > div, .info-section p, .login-card > p, .order-meta,
+.audit-list > div, .audit-list time { color: #52634f; font-size: 13px; }
+.nav > a, .header-tag, .notice, .guide-card > .text-link,
+.privacy-card a, .help-note b, .subtle-link, .text-link,
+.check-label, .input-label, .bottom-trust, .footer,
+.guide-step h4, .status-guide b, .toggle-row b { color: #405b3f; font-size: 13px; }
+.step-label > label, .tabs button { font-size: 14px; }
+.hero p { color: #52634f; font-size: 14px; }
+.section-kicker, .eyebrow { color: #647759; font-size: 10px; }
+.badge, .service-badge, .tab-tag { color: #405b3f; font-size: 12px; }
+.session-field textarea, textarea { font-size: 13px; }
+.account-preview { color: #405b3f; font-size: 13px; }
+.alert, .field-heading > .subtle-link { font-size: 13px; }
+.textarea-bottom { color: #52634f; font-size: 12px; }
+.audit-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.audit-pagination { display: flex; align-items: center; gap: 10px; color: #52634f; font-size: 12px; }
+.audit-pagination button { padding: 2px 0; background: none; color: #405b3f; font-size: 12px; }
+.settings-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 26px; }
+.settings-toggles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 26px; }
+.settings-column { min-width: 0; }
+.help-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.help-tabs button { padding: 8px 16px; border: 1px solid #dce4d5; border-radius: 7px; background: #fff; color: #405b3f; font-size: 13px; }
+.help-tabs button.selected { background: #eaf0df; border-color: #cddbc2; font-weight: 600; }
+.help-layout > .info-section { padding: 24px; border: 1px solid #e5e9e1; border-radius: 12px; background: #fff; }
+
+/* Keep the default desktop experience within one viewport. Long results and
+   long help content can still extend naturally, so nothing is cut off. */
+@media (min-width: 900px) {
+  .header { height: 58px; }
+  .header-inner { gap: 55px; }
+  .hero, .hero.compact { min-height: 100px; padding: 14px 0; }
+  .hero h1, .compact h1 { margin-top: 5px; font-size: 28px; line-height: 1.35; }
+  .hero p { margin-top: 4px; }
+  .hero-art { position: absolute; right: 36px; top: 0; height: 100%; width: 200px; margin-right: 0; transform: scale(.68); transform-origin: center; }
+  .art-caption { display: none; }
+  .notice { min-height: 35px; padding: 7px 14px; margin-bottom: 12px; }
+  .workspace { gap: 18px; grid-template-columns: minmax(0, 1fr) 280px; }
+  .card-heading { padding: 14px 24px 10px; }
+  .card-heading h2 { margin-top: 2px; font-size: 19px; }
+  .tabs { padding: 0 24px; }
+  .tabs button { padding: 8px 0 9px; }
+  .redeem-form { padding: 14px 24px 13px; }
+  .form-section + .form-section { margin-top: 12px; }
+  .step-label { margin-bottom: 7px; }
+  .input-icon input { height: 42px; }
+  .input-icon svg { top: 12px; }
+  .field-hint { margin-top: 5px; line-height: 1.45; }
+  .session-field textarea { min-height: 65px; height: 65px; padding: 8px 12px 4px; line-height: 1.4; }
+  .batch-section textarea { min-height: 150px; height: 150px; }
+  .textarea-bottom { padding: 4px 12px; }
+  .confirmation { margin-top: 12px; padding-top: 10px; }
+  .confirmation > p { margin-top: 3px; line-height: 1.4; }
+  .alert { margin: 8px 0; padding: 7px 12px; line-height: 1.5; }
+  .submit-button { min-height: 42px; margin-top: 12px; padding: 9px 20px; }
+  .form-footnote { margin-top: 6px; }
+  .bottom-trust { margin: 10px 0 0; }
+  .sidebar { gap: 10px; }
+  .guide-card { padding: 16px 18px; }
+  .guide-card h3 { margin-top: 4px; font-size: 17px; }
+  .guide-steps { margin: 12px 0; }
+  .guide-step { padding-bottom: 11px; }
+  .guide-step:not(:last-child):before { height: 24px; }
+  .guide-step p { margin-top: 1px; line-height: 1.45; }
+  .guide-card > .text-link { padding-top: 10px; }
+  .privacy-card { padding: 13px 18px; }
+  .privacy-card h4 { margin-top: 4px; }
+  .privacy-card p { margin-top: 3px; line-height: 1.5; }
+  .privacy-card a { margin-top: 6px; }
+  .help-note { padding: 2px 10px; }
+  .help-note p { margin-top: 1px; line-height: 1.4; }
+  .footer { margin-top: 12px; padding: 10px 0 12px; }
+  .login-layout { min-height: 0; padding: 35px 50px; }
+  .admin-layout { min-height: 0; padding-top: 20px; }
+  .admin-sidebar { min-height: 450px; }
+  .query-card form { padding-bottom: 20px; }
+  .empty-state { padding: 30px 15px; }
+}
+
+@media (min-width: 900px) and (max-height: 850px) {
+  .header { height: 48px; }
+  .hero, .hero.compact { min-height: 0; padding: 8px 0; }
+  .hero .eyebrow { display: none; }
+  .hero h1, .compact h1 { margin-top: 0; font-size: 25px; }
+  .notice { margin-bottom: 8px; }
+  .card-heading { padding: 9px 20px; }
+  .card-heading .section-kicker { display: none; }
+  .card-heading h2 { margin: 0; }
+  .tabs { padding: 0 20px; }
+  .tabs button { padding: 6px 0; }
+  .redeem-form { padding: 8px 20px; }
+  .form-section + .form-section { margin-top: 7px; }
+  .step-label { margin-bottom: 4px; }
+  .field-hint { margin-top: 3px; }
+  .confirmation { margin-top: 8px; padding-top: 7px; }
+  .submit-button { margin-top: 8px; }
+  .form-footnote, .bottom-trust { display: none; }
+  .footer { margin-top: 8px; padding: 4px 0; }
+  .guide-card { padding: 11px 16px; }
+  .guide-steps { margin: 7px 0; }
+  .guide-step { padding-bottom: 6px; }
+  .privacy-card { padding: 10px 16px; }
+  .admin-heading { padding: 2px 0 10px; }
+  .admin-heading h1 { margin-top: 3px; font-size: 25px; }
+  .stat-card { padding: 10px 14px; gap: 3px; }
+  .stat-card > b { font-size: 26px; }
+  .admin-welcome { padding: 14px 20px; margin-top: 12px; }
+  .admin-welcome h2 { margin: 5px 0; font-size: 18px; }
+  .admin-welcome p { margin-bottom: 10px; }
+  .admin-main > .result-card { margin-top: 12px; padding: 14px 20px; }
+  .audit-list { margin-top: 8px; }
+  .audit-list > div { padding: 6px 0; }
+  .settings-form { padding: 16px 20px; }
+  .settings-form .input-label { margin: 10px 0 5px; }
+  .settings-form input:not([type=checkbox]) { padding: 8px 12px; }
+  .settings-form textarea { min-height: 70px; height: 70px; padding: 7px 12px; }
+  .settings-toggles .toggle-row { padding: 10px 0; }
+  .settings-form > .primary { margin-top: 12px; }
+  .direct-form { padding: 14px 20px; }
+  .direct-form > .muted { margin: 5px 0 8px; }
+  .direct-form fieldset { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; grid-template-areas: 'batch batch' 'card session-label' 'card session' 'confirm confirm'; align-items: start; }
+  .direct-form fieldset > .check-label:first-child { grid-area: batch; }
+  .direct-form fieldset > .direct-grid { grid-area: card; margin-top: 0; gap: 8px; }
+  .direct-form fieldset > .input-label { grid-area: session-label; margin: 0 0 5px; }
+  .direct-form fieldset > textarea { grid-area: session; min-height: 120px; height: 150px; }
+  .direct-form fieldset > .check-label:last-child { grid-area: confirm; }
+  .direct-form fieldset:not(:has(.direct-grid)) { grid-template-areas: 'batch batch' 'session-label session-label' 'session session' 'confirm confirm'; }
+  .direct-form .direct-grid input, .direct-form .direct-grid select { padding: 8px 10px; }
+  .direct-form .check-label { margin: 8px 0; }
+  .direct-form > .primary { margin-top: 8px; }
+  .help-tabs { margin-bottom: 8px; }
+  .help-tabs button { padding: 6px 14px; }
+  .faq summary { padding: 10px 0; font-size: 13px; }
+  .faq details > div { padding-bottom: 10px; line-height: 1.65; }
+  .help-layout > .info-section { padding: 16px 20px; }
+  .info-section h2 { margin: 5px 0 8px; }
+  .info-section p { margin-top: 7px; line-height: 1.7; }
+}
+
+@media (max-width: 899px) {
+  .field-hint, .guide-step p, .privacy-card p, .help-note p,
+  .confirmation > p, .form-footnote, .status-guide p,
+  .check-label, .footer, .bottom-trust { font-size: 13px; }
+  .nav > a, .hero p, .step-label > label, .tabs button { font-size: 14px; }
+  .session-field textarea { font-size: 13px; }
+}
+
+@media (max-width: 620px) {
+  .settings-columns, .settings-toggles { grid-template-columns: 1fr; gap: 20px; }
+}
+
+@media (max-width: 370px) {
+  .nav { gap: 9px; }
+  .nav > a { font-size: 12px; }
+}
