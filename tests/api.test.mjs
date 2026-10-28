@@ -6,8 +6,8 @@ import path from 'node:path';
 import { randomBytes, randomUUID, scryptSync } from 'node:crypto';
 import request from 'supertest';
 import { createApp, UPSTREAM } from '../server/app.mjs';
-import { loadConfig } from '../server/security.mjs';
-import { parseBatch } from '../src/api.js';
+import { loadConfig, security } from '../server/security.mjs';
+import { parseCardList, parseBatchSessions } from '../src/api.js';
 import { mountProduction } from '../server/static.mjs';
 import express from 'express';
 
@@ -26,6 +26,7 @@ async function fixture(t, fetchOverride) {
   const fetcher = async (url, options) => {
     const body = JSON.parse(options.body); calls.push({ url, options, body });
     if (fetchOverride) return fetchOverride(url, options, { calls, orders, idempotency });
+    if (url.endsWith('/preview')) return Response.json({ plan: 'plus', plan_label: 'Plus' });
     if (url.endsWith('/direct')) {
       const key = options.headers['Idempotency-Key'];
       let order = idempotency.get(key);
@@ -44,15 +45,26 @@ async function fixture(t, fetchOverride) {
   t.after(() => { runtime.close(); const resolved = path.resolve(dataDir); assert.ok(resolved.startsWith(path.join(tmpdir(), 'limen-test-'))); rmSync(resolved, { recursive: true, force: true }); });
   async function client(admin = false) {
     const agent = request.agent(runtime.app);
-    let session = (await agent.get('/api/session').expect(200)).body;
+    const initial = await agent.get('/api/session').expect(200);
+    let session = initial.body;
+    const raw = decodeURIComponent(initial.headers['set-cookie'][0].match(/limen_session=([^;]+)/)[1]);
+    const helperCrypto = security(config);
+    const owner = runtime.store.db.prepare('SELECT owner FROM sessions WHERE id=?').get(helperCrypto.hash(raw)).owner;
     const client = { agent, get csrf() { return session.csrfToken; },
-      send(method, endpoint, body, headers = {}) { return agent[method](endpoint).set('Origin',config.origin).set('X-CSRF-Token',session.csrfToken).set(headers).send(body); },
+      send(method, endpoint, body, headers = {}) {
+        if (endpoint === '/api/orders' && body?.orderType === 'card_key' && !Object.keys(headers).some(k => k.toLowerCase() === 'x-card-verification')) {
+          const expiry = String(Date.now()+600000); const site = runtime.store.settings().verificationSite;
+          const signature = helperCrypto.hash(`card-verification:${owner}:${site}:${helperCrypto.hash(body.cardKey.trim())}:${expiry}`);
+          headers = { ...headers, 'X-Card-Verification': `${expiry}.${signature}` };
+        }
+        return agent[method](endpoint).set('Origin',config.origin).set('X-CSRF-Token',session.csrfToken).set(headers).send(body);
+      },
       async login() { session = (await client.send('post','/api/admin/login',{password}).expect(200)).body; },
     };
     if (admin) await client.login();
     return client;
   }
-  const settings = { siteName: 'Test site', announcement: '公告', maintenance: false, allowBatch: true, supportText: '联系商家' };
+  const settings = { siteName: 'Test site', announcement: '公告', maintenance: false, allowBatch: true, supportText: '联系商家', verificationSite: 'test-site' };
   const admin = await client(true);
   await admin.send('put','/api/admin/settings',{...settings,apiKey:'test-api-key-private-123'}).expect(200);
   return { ...runtime, admin, client, calls, orders, config, settings };
@@ -216,11 +228,62 @@ test('管理员会话绑定密码版本，密码更改后旧权限失效',async 
   f.config.passwordHash=`${otherSalt}:${scryptSync('New-password',otherSalt,64).toString('hex')}`;
   await f.admin.agent.get('/api/admin/settings').expect(401);
 });
-test('批量解析支持两行和 JSON 数组，拒绝重复卡密、重复账号与超额',()=>{
-  const p=payload();assert.equal(parseBatch(`${p.cardKey}\n${JSON.stringify(p.token)}`).length,1);
-  assert.equal(parseBatch(JSON.stringify([p])).length,1);
-  assert.throws(()=>parseBatch(JSON.stringify([p,p])),/重复/);
-  assert.throws(()=>parseBatch(JSON.stringify([p,{...p,cardKey:'different'}])),/账号/);
-  assert.throws(()=>parseBatch(JSON.stringify(Array(51).fill(p))),/50/);
-  assert.throws(()=>parseBatch('CARD\n{}\nORPHAN'),/两行/);
+test('批量卡密先单独解析，再按原顺序匹配 Session',()=>{
+  const p=payload(); const q=payload(); const cards=parseCardList(`${p.cardKey}\n${q.cardKey}`).map(cardKey=>({cardKey}));
+  assert.deepEqual(parseBatchSessions(`${JSON.stringify(p.token)}\n${JSON.stringify(q.token)}`,cards).map(row=>row.cardKey),[p.cardKey,q.cardKey]);
+  assert.equal(parseBatchSessions(JSON.stringify([p.token,q.token]),cards).length,2);
+  assert.throws(()=>parseCardList(`${p.cardKey}\n${p.cardKey}`),/重复/);
+  assert.throws(()=>parseBatchSessions(JSON.stringify([p.token,p.token]),cards),/账号/);
+  assert.throws(()=>parseCardList(Array.from({length:51},(_,i)=>`CARD-${i}`).join('\n')),/50/);
+  assert.throws(()=>parseBatchSessions(JSON.stringify([p.token]),cards),/2 条/);
+});
+test('卡密预验证请求使用上游站点接口，凭证绑定卡密及当前访客',async t=>{
+  const f=await fixture(t); const c=await f.client(); const other=await f.client(); const p=payload();
+  const verified=await c.send('post','/api/card-keys/verify',{cardKey:p.cardKey}).expect(200);
+  assert.equal(verified.body.planLabel,'Plus');
+  assert.equal(f.calls[0].url,'https://admin-lm.zdhxylc.shop/api/v2/sites/test-site/preview');
+  assert.deepEqual(f.calls[0].body,{redeem_code:p.cardKey});
+  assert.equal(f.calls[0].options.headers['X-API-Key'],undefined);
+  const proof=verified.body.verificationToken;
+  await c.send('post','/api/orders',p,{'Idempotency-Key':randomUUID(),'X-Card-Verification':''}).expect(403);
+  const expired=`${Date.now()-1}.${proof.split('.')[1]}`;
+  await c.send('post','/api/orders',p,{'Idempotency-Key':randomUUID(),'X-Card-Verification':expired}).expect(403);
+  await other.send('post','/api/orders',p,{'Idempotency-Key':randomUUID(),'X-Card-Verification':proof}).expect(403);
+  await c.send('post','/api/orders',{...p,cardKey:'DIFFERENT'}, {'Idempotency-Key':randomUUID(),'X-Card-Verification':proof}).expect(403);
+  await c.send('post','/api/orders',p,{'Idempotency-Key':randomUUID(),'X-Card-Verification':proof}).expect(201);
+  await c.send('post','/api/card-keys/verify',{cardKey:p.cardKey}).expect(409);
+});
+test('预验证失败或响应不完整时不发放凭证',async t=>{
+  let attempts=0;
+  const f=await fixture(t,async (url)=>{
+    if (!url.endsWith('/preview')) throw new Error('Unexpected order');
+    attempts++;
+    if(attempts===1)return Response.json({detail:'卡密无效'}, {status:400});
+    if(attempts===2)return Response.json({unexpected:true});
+    throw new Error('network');
+  });
+  const c=await f.client(); const cardKey=payload().cardKey;
+  const invalid=await c.send('post','/api/card-keys/verify',{cardKey}).expect(400);assert.equal(invalid.body.error.code,'CARD_INVALID');
+  const malformed=await c.send('post','/api/card-keys/verify',{cardKey}).expect(502);assert.equal(malformed.body.error.code,'VERIFICATION_UNAVAILABLE');
+  const outage=await c.send('post','/api/card-keys/verify',{cardKey}).expect(503);assert.equal(outage.body.error.code,'VERIFICATION_UNAVAILABLE');
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM submissions').get().n,0);
+});
+test('修改站点标识会使旧验证凭证失效，未知提交可按原键安全重试',async t=>{
+  let created=0;
+  const f=await fixture(t,async url=>{
+    if(url.endsWith('/preview'))return Response.json({plan:'plus'});
+    created++;if(created===1)throw new Error('timeout');return Response.json({code:0,data:{order_no:randomUUID(),status:'pending'}});
+  });
+  const c=await f.client(); const p=payload(); const proof=(await c.send('post','/api/card-keys/verify',{cardKey:p.cardKey}).expect(200)).body.verificationToken;
+  await f.admin.send('put','/api/admin/settings',{...f.settings,verificationSite:'other-site'}).expect(200);
+  await c.send('post','/api/orders',p,{'Idempotency-Key':randomUUID(),'X-Card-Verification':proof}).expect(403);
+  const renewed=(await c.send('post','/api/card-keys/verify',{cardKey:p.cardKey}).expect(200)).body.verificationToken;
+  const key=randomUUID();await c.send('post','/api/orders',p,{'Idempotency-Key':key,'X-Card-Verification':renewed}).expect(504);
+  const other=await f.client();
+  await other.send('post','/api/card-keys/recover',{cardKey:p.cardKey,submissionKey:key}).expect(404);
+  await c.send('post','/api/card-keys/recover',{cardKey:'WRONG',submissionKey:key}).expect(404);
+  await c.send('post','/api/card-keys/recover',{cardKey:p.cardKey,submissionKey:key}).expect(200);
+  await c.send('post','/api/orders',{...p,token:token('different-account')},{'Idempotency-Key':key,'X-Card-Verification':''}).expect(409);
+  await c.send('post','/api/orders',p,{'Idempotency-Key':key,'X-Card-Verification':''}).expect(201);
+  await c.send('post','/api/card-keys/recover',{cardKey:p.cardKey,submissionKey:key}).expect(404);
 });

@@ -36,30 +36,28 @@ export function parseSession(raw) {
   } catch { throw new Error('accessToken 无效或已过期，请重新获取 Session。'); }
   return token;
 }
-export function parseBatch(raw) {
+export function parseCardList(raw) {
+  const cards = raw.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  if (!cards.length || cards.length > 50) throw new Error('请输入 1–50 张卡密，每行一张。');
+  if (cards.some(card => card.length > 128 || /[\r\n]/.test(card))) throw new Error('每张卡密最多 128 个字符。');
+  if (new Set(cards).size !== cards.length) throw new Error('卡密列表存在重复项，请检查后重试。');
+  return cards;
+}
+export function parseBatchSessions(raw, cards) {
   const input = raw.trim();
-  if (!input) throw new Error('请粘贴或导入批量兑换内容。');
-  let rows;
+  if (!input) throw new Error('请按卡密顺序输入 Session。');
+  let sessions;
   if (input.startsWith('[')) {
-    try { rows = JSON.parse(input); } catch { throw new Error('批量 JSON 数组格式不正确。'); }
-    if (!Array.isArray(rows)) throw new Error('请使用 JSON 数组格式。');
-  } else {
-    const lines = input.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-    if (lines.length % 2) throw new Error('每组需要两行：第一行卡密，第二行完整 Session JSON。');
-    rows = [];
-    for (let i = 0; i < lines.length; i += 2) rows.push({ cardKey: lines[i], token: lines[i+1] });
-  }
-  if (!rows.length || rows.length > 50) throw new Error('每批支持 1–50 组兑换。');
-  const cards = new Set(); const accounts = new Set();
-  return rows.map((row, index) => {
+    try { sessions = JSON.parse(input); } catch { throw new Error('Session JSON 数组格式不正确。'); }
+  } else sessions = input.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  if (!Array.isArray(sessions) || sessions.length !== cards.length) throw new Error(`请按顺序提供 ${cards.length} 条 Session。`);
+  const accounts = new Set();
+  return sessions.map((session, i) => {
     try {
-      if (typeof row.cardKey !== 'string' || !row.cardKey.trim() || row.cardKey.trim().length > 128) throw new Error('卡密长度应为 1–128 个字符。');
-      const token = parseSession(row.token);
-      const cardKey = row.cardKey.trim();
-      if (cards.has(cardKey)) throw new Error('卡密在本批次重复。');
+      const token = parseSession(session);
       if (accounts.has(token.account.id)) throw new Error('同一账号不能在本批次重复兑换。');
-      cards.add(cardKey); accounts.add(token.account.id);
-      return { orderType: 'card_key', cardKey, token };
-    } catch (error) { throw new Error(`第 ${index + 1} 组：${error.message}`); }
+      accounts.add(token.account.id);
+      return { orderType: 'card_key', cardKey: cards[i].cardKey, token };
+    } catch (error) { throw new Error(`第 ${i + 1} 条 Session：${error.message}`); }
   });
 }

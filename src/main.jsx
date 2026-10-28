@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ArrowUpRight, ArrowRight, ArrowLeft, Check, CheckCheck, ShieldCheck, LockKeyhole, KeyRound, Layers, Search, CircleHelp, ChevronDown, ChevronRight, Copy, CheckCircle2, CircleAlert, Clock3, LoaderCircle, Download, Upload, X, Settings2, LogOut, LayoutDashboard, CreditCard, ExternalLink, RefreshCw, Menu, Terminal, Pause, FileJson, Eye, EyeOff, Leaf } from 'lucide-react';
-import { api, submissionKey, downloadJson, parseSession, parseBatch } from './api';
+import { api, submissionKey, downloadJson, parseSession, parseCardList, parseBatchSessions } from './api';
 import './styles.css';
 import './compact.css';
 
-const DEFAULTS = { siteName: 'LIMEN 礼门', announcement: '', configured: false, maintenance: false, allowBatch: true, supportText: '如需帮助，请联系向您提供卡密的商家。' };
+const DEFAULTS = { siteName: 'LIMEN 礼门', announcement: '', configured: false, verificationConfigured: false, maintenance: false, allowBatch: true, supportText: '如需帮助，请联系向您提供卡密的商家。' };
 const STATUS = { pending: ['排队中', 'pending'], processing: ['处理中', 'pending'], pending_verification: ['待核验', 'attention'], success: ['兑换成功', 'success'], failed: ['兑换失败', 'failed'] };
 const mask = v => !v ? '—' : v.length < 9 ? '••••' : `${v.slice(0, 4)} ··· ${v.slice(-4)}`;
 function Spinner() { return <LoaderCircle size={17} className="spin" />; }
@@ -15,31 +15,66 @@ function Header({ path, name }) {
   const [open, setOpen] = useState(false);
   return <header className="header"><div className="header-inner"><Brand name={name}/><nav className={open ? 'nav open' : 'nav'} aria-label="主导航"><a className={path === 'recharge' ? 'active' : ''} href="/">兑换中心</a><a className={path === 'orders' ? 'active' : ''} href="/orders">订单查询</a><a className={path === 'help' ? 'active' : ''} href="/help">使用帮助<ArrowUpRight size={13}/></a></nav><div className="header-right"><span className="header-tag"><span className="live-dot"/>安心兑换，轻松抵达</span><button className="mobile-menu icon-button" aria-label="展开导航" onClick={() => setOpen(!open)}><Menu size={22}/></button></div></div></header>;
 }
-function Footer() { return <footer className="footer"><div><span className="footer-mark">LIMEN</span><span>让每一次连接，都更简单。</span></div><div><a href="/help#privacy">隐私与安全</a><a href="/limdh-admin">商户管理<ArrowUpRight size={12}/></a><span>© {new Date().getFullYear()} 礼门</span></div></footer>; }
+function Footer() { return <footer className="footer"><div><span className="footer-mark">LIMEN</span><span>让每一次连接，都更简单。</span></div><div><a href="/help#privacy">隐私与安全</a><span>© {new Date().getFullYear()} 礼门</span></div></footer>; }
 function StepLabel({ number, title, extra }) { return <div className="step-label"><span>{number}</span><label>{title}</label>{extra && <small>{extra}</small>}</div>; }
 function Guide({ settings }) {
-  return <aside className="sidebar"><div className="guide-card"><span className="eyebrow">A LITTLE GUIDANCE</span><h3>兑换，只需三步<span>。</span></h3><div className="guide-steps">{[['01', '准备好您的卡密', '使用商家提供的有效兑换码。'], ['02', '粘贴账号 Session', '获取当前登录账号的完整信息。'], ['03', '确认并等待结果', '保留订单号，随时查询进度。']].map(([n,t,d]) => <div className="guide-step" key={n}><span>{n}</span><div><h4>{t}</h4><p>{d}</p></div></div>)}</div><a className="text-link" href="/help">第一次使用？查看详细指南<ArrowUpRight size={15}/></a></div><div className="privacy-card"><ShieldCheck size={24} strokeWidth={1.5}/><h4>您的信息，妥善守护</h4><p>Session 仅用于本次兑换，不在本站数据库留存。请勿将账号凭据分享给他人。</p><a href="/help#privacy">了解安全说明<ArrowRight size={14}/></a></div><div className="help-note"><CircleHelp size={18}/><div><b>遇到问题？</b><p>{settings.supportText}</p></div></div></aside>;
+  return <aside className="sidebar"><div className="guide-card"><span className="eyebrow">A LITTLE GUIDANCE</span><h3>兑换，只需三步<span>。</span></h3><div className="guide-steps">{[['01', '先验证卡密', '输入商家提供的卡密并验证。'], ['02', '粘贴账号 Session', '验证通过后填写完整账号信息。'], ['03', '确认并等待结果', '保留订单号，随时查询进度。']].map(([n,t,d]) => <div className="guide-step" key={n}><span>{n}</span><div><h4>{t}</h4><p>{d}</p></div></div>)}</div><a className="text-link" href="/help">第一次使用？查看详细指南<ArrowUpRight size={15}/></a></div><div className="privacy-card"><ShieldCheck size={24} strokeWidth={1.5}/><h4>您的信息，妥善守护</h4><p>Session 仅用于本次兑换，不在本站数据库留存。请勿将账号凭据分享给他人。</p><a href="/help#privacy">了解安全说明<ArrowRight size={14}/></a></div><div className="help-note"><CircleHelp size={18}/><div><b>遇到问题？</b><p>{settings.supportText}</p></div></div></aside>;
 }
 function Hero({ tag = 'REDEMPTION, SIMPLIFIED.', title, subtitle, compact = false }) {
   return <section className={`hero ${compact ? 'compact' : ''}`}><div><div className="eyebrow"><span/> {tag}</div><h1>{title}</h1><p>{subtitle}</p></div>{!compact && <div className="hero-art" aria-hidden="true"><div className="art-orbit"/><div className="ticket"><div className="ticket-brand"><span className="tiny-leaf">✳</span> LIMEN <ArrowUpRight size={17}/></div><div className="ticket-lines"><i/><i/></div><div className="ticket-bottom"><span>GOOD THINGS<br/>ARE ON THE WAY.</span><span className="ticket-seal"><Check size={22}/></span></div></div><span className="art-caption">A simple code. A new possibility.</span><span className="art-spark">✳</span></div>}</section>;
 }
 function Recharge({ settings, ready }) {
-  const [mode, setMode] = useState('single'); const [cardKey, setCardKey] = useState(''); const [session, setSession] = useState(''); const [batch, setBatch] = useState('');
-  const [agreed, setAgreed] = useState(false); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [items, setItems] = useState([]); const [parsed, setParsed] = useState(null); const [orders, setOrders] = useState([]); const [attempt, setAttempt] = useState('');
-  const [show, setShow] = useState(false); const stop = useRef(false); const fileRef = useRef(); const actionLock = useRef(false);
+  const [mode, setMode] = useState('single'); const [cardKey, setCardKey] = useState(''); const [session, setSession] = useState(''); const [batch, setBatch] = useState(''); const [batchSessions, setBatchSessions] = useState(''); const [recoverMode, setRecoverMode] = useState(false); const [recoveryKey, setRecoveryKey] = useState('');
+  const [agreed, setAgreed] = useState(false); const [busy, setBusy] = useState(false); const [verifying, setVerifying] = useState(false); const [singleVerification, setSingleVerification] = useState(null); const [batchVerifications, setBatchVerifications] = useState(null); const [verificationProgress, setVerificationProgress] = useState(''); const [error, setError] = useState(''); const [items, setItems] = useState([]); const [orders, setOrders] = useState([]); const [attempt, setAttempt] = useState('');
+  const [show, setShow] = useState(false); const stop = useRef(false); const fileRef = useRef(); const sessionFileRef = useRef(); const actionLock = useRef(false); const verifyLock = useRef(false);
   let account; try { account = parseSession(session).user.email; } catch { /* Show only validated account. */ }
-  const disabled = !ready || settings.maintenance || !settings.configured;
+  const disabled = !ready || settings.maintenance || !settings.configured || !settings.verificationConfigured;
   async function importFile(e) {
     const file = e.target.files?.[0]; if (!file) return;
     if (file.size > 512000) { setError('文件不能超过 500 KB。'); return; }
-    const text = await file.text(); setBatch(text); setParsed(null); setError(''); e.target.value = '';
+    const text = await file.text(); setBatch(text); setBatchVerifications(null); setBatchSessions(''); setError(''); e.target.value = '';
   }
-  function preview() { try { const rows = parseBatch(batch); setParsed(rows); setError(''); } catch (e) { setParsed(null); setError(e.message); } }
+  async function importSessions(e) {
+    const file = e.target.files?.[0]; if (!file) return;
+    if (file.size > 512000) { setError('文件不能超过 500 KB。'); e.target.value = ''; return; }
+    setBatchSessions(await file.text()); setError(''); e.target.value = '';
+  }
+  async function verifyCards() {
+    if (verifyLock.current || verifying || busy) return;
+    setError(''); let cards;
+    try { cards = mode === 'single' ? parseCardList(cardKey) : parseCardList(batch); if (mode === 'single' && cards.length !== 1) throw new Error('单个兑换请只输入一张卡密。'); }
+    catch (e) { setError(e.message); return; }
+    verifyLock.current = true; setVerifying(true); setVerificationProgress('');
+    if (mode === 'single') setSingleVerification(null); else setBatchVerifications(null);
+    try {
+      const verified = [];
+      for (let i = 0; i < cards.length; i++) {
+        setVerificationProgress(`正在验证 ${i + 1} / ${cards.length}`);
+        try {
+          if (mode === 'single' && recoverMode) {
+            if (!/^[A-Za-z\d_-]{1,128}$/.test(recoveryKey.trim())) throw new Error('请输入原提交标识。');
+            const result = await api('/card-keys/recover', { method: 'POST', body: { cardKey: cards[i], submissionKey: recoveryKey.trim() } });
+            verified.push({ cardKey: cards[i], ...result, verificationToken: '', recoveryKey: recoveryKey.trim(), planLabel: '仅恢复原提交，请填写原来的 Session' });
+          } else {
+            const result = await api('/card-keys/verify', { method: 'POST', body: { cardKey: cards[i] }, headers: mode === 'batch' ? { 'X-Batch-Mode': '1' } : {} });
+            verified.push({ cardKey: cards[i], ...result });
+          }
+        } catch (e) { throw new Error(mode === 'batch' ? `第 ${i + 1} 张卡密：${e.message}` : e.message); }
+        if (i < cards.length - 1) await new Promise(resolve => setTimeout(resolve, 850));
+      }
+      if (mode === 'single') setSingleVerification(verified[0]); else setBatchVerifications(verified);
+    } catch (e) { setError(e.message); }
+    finally { verifyLock.current = false; setVerifying(false); setVerificationProgress(''); }
+  }
   async function submit(e) {
     e.preventDefault(); if (actionLock.current) return; setError('');
     if (!agreed) { setError('请先阅读并确认下方兑换须知。'); return; }
     let payloads;
-    try { payloads = mode === 'single' ? [{ orderType: 'card_key', cardKey: cardKey.trim(), token: parseSession(session) }] : parseBatch(batch); if (!payloads[0].cardKey) throw new Error('请输入卡密。'); } catch (e) { setError(e.message); return; }
+    try {
+      if (mode === 'single' && (!singleVerification || singleVerification.cardKey !== cardKey.trim())) throw new Error('请先验证当前卡密。');
+      if (mode === 'batch' && !batchVerifications) throw new Error('请先验证全部卡密。');
+      payloads = mode === 'single' ? [{ orderType: 'card_key', cardKey: cardKey.trim(), token: parseSession(session) }] : parseBatchSessions(batchSessions, batchVerifications);
+    } catch (e) { setError(e.message); return; }
     actionLock.current = true; setBusy(true); stop.current = false;
     const results = payloads.map((p, i) => ({ index: i+1, card: mask(p.cardKey), email: p.token.user.email, state: 'waiting' })); setItems([...results]);
     let allSucceeded = true;
@@ -47,30 +82,39 @@ function Recharge({ settings, ready }) {
       if (stop.current) { allSucceeded = false; break; }
       results[i].state = 'submitting'; setItems([...results]);
       try {
-        const key = await submissionKey(payloads[i]); setAttempt(key); results[i].attempt = key;
-        const result = await api('/orders', { method: 'POST', body: payloads[i], headers: { 'Idempotency-Key': key, ...(mode === 'batch' ? { 'X-Batch-Mode': '1' } : {}) } });
+        const verified = mode === 'single' ? singleVerification : batchVerifications[i];
+        const key = verified.recoveryKey || await submissionKey(payloads[i]); setAttempt(key); results[i].attempt = key;
+        const headers = { 'Idempotency-Key': key, 'X-Card-Verification': verified.verificationToken, ...(mode === 'batch' ? { 'X-Batch-Mode': '1' } : {}) };
+        let result;
+        try { result = await api('/orders', { method: 'POST', body: payloads[i], headers }); }
+        catch (e) {
+          if (e.code !== 'CARD_VERIFICATION_REQUIRED' || verified.recoveryKey) throw e;
+          const renewed = await api('/card-keys/verify', { method: 'POST', body: { cardKey: payloads[i].cardKey }, headers: mode === 'batch' ? { 'X-Batch-Mode': '1' } : {} });
+          result = await api('/orders', { method: 'POST', body: payloads[i], headers: { ...headers, 'X-Card-Verification': renewed.verificationToken } });
+        }
         results[i] = { ...results[i], state: 'submitted', order: result.order }; setOrders(old => [result.order, ...old.filter(x => x.order_no !== result.order.order_no)]);
       } catch (e) {
         allSucceeded = false; results[i] = { ...results[i], state: e.code === 'RESULT_UNKNOWN' ? 'unknown' : 'error', message: e.message };
         setError(e.message);
-        if (e.status === 429 || ['RESULT_UNKNOWN','UPSTREAM_INVALID','NOT_CONFIGURED','MAINTENANCE','IN_FLIGHT'].includes(e.code)) stop.current = true;
+        if (e.status === 429 || ['RESULT_UNKNOWN','UPSTREAM_INVALID','NOT_CONFIGURED','MAINTENANCE','IN_FLIGHT','CARD_INVALID','VERIFICATION_UNAVAILABLE','CARD_VERIFICATION_REQUIRED'].includes(e.code)) stop.current = true;
       }
       setItems([...results]);
       if (i < payloads.length - 1 && !stop.current) await new Promise(r => setTimeout(r, 850));
     }
-    if (allSucceeded) { setSession(''); setCardKey(''); setBatch(''); setParsed(null); setAgreed(false); }
+    if (allSucceeded) { setSession(''); setCardKey(''); setBatch(''); setBatchSessions(''); setSingleVerification(null); setBatchVerifications(null); setRecoveryKey(''); setRecoverMode(false); setAgreed(false); }
     setBusy(false); actionLock.current = false;
   }
   return <><Hero title={<>让每一次兑换，<em>都简单一点。</em></>} subtitle="一枚卡密，开启新的可能。准备好账号信息，剩下的交给我们。"/>
     <div className="notice"><span className="notice-label">服务公告</span><span>{settings.announcement || '请确认账号信息后再兑换，提交成功后请保留完整订单号。'}</span><ArrowUpRight size={15}/></div>
-    <div className="workspace"><main className="main-column"><section className="redeem-card"><div className="card-heading"><div><span className="section-kicker">REDEEM YOUR CODE</span><h2>开启您的兑换</h2></div><span className={`service-badge ${disabled ? 'offline' : ''}`}><span className="live-dot"/>{!ready ? '连接中' : settings.maintenance ? '维护中' : !settings.configured ? '待配置' : '服务已就绪'}</span></div>
-    <div className="tabs" role="tablist" aria-label="提交方式"><button type="button" role="tab" aria-selected={mode === 'single'} disabled={busy} className={mode === 'single' ? 'selected' : ''} onClick={() => { setMode('single'); setError(''); }}><KeyRound size={16}/>单个兑换</button><button type="button" role="tab" aria-selected={mode === 'batch'} disabled={busy || !settings.allowBatch} className={mode === 'batch' ? 'selected' : ''} onClick={() => { setMode('batch'); setError(''); }}><Layers size={16}/>批量兑换<span className="tab-tag">最多 50 组</span></button></div>
-    <form onSubmit={submit} className="redeem-form"><fieldset disabled={busy || disabled}>
-    {mode === 'single' ? <><div className="form-section"><StepLabel number="01" title="输入兑换卡密" extra="CDK CODE"/><label className="sr-only" htmlFor="card-key">兑换卡密</label><div className="input-icon"><KeyRound size={18}/><input id="card-key" required autoComplete="off" spellCheck="false" maxLength={128} value={cardKey} onChange={e => setCardKey(e.target.value)} placeholder="请输入商家提供的兑换卡密"/></div><p className="field-hint">卡密区分大小写，请完整复制，避免遗漏字符。</p></div>
-    <div className="form-section"><div className="field-heading"><StepLabel number="02" title="粘贴账号 Session"/><a className="subtle-link" href="https://chatgpt.com/api/auth/session" target="_blank" rel="noopener noreferrer">获取 Session<ArrowUpRight size={14}/></a></div><div className="session-field"><label className="sr-only" htmlFor="session-json">完整 Session JSON</label><textarea id="session-json" className={!show && session ? 'concealed' : ''} rows={5} required autoComplete="off" spellCheck="false" maxLength={100000} placeholder={'在此粘贴完整的 Session JSON\n{ "user": { ... }, "account": { ... }, "accessToken": "..." }'} value={session} onChange={e => setSession(e.target.value)}/><div className="textarea-bottom"><span><FileJson size={13}/>JSON 格式</span><div>{session && <button type="button" onClick={() => setSession('')}>清空</button>}<button type="button" aria-label={show ? '隐藏 Session' : '显示 Session'} onClick={() => setShow(!show)}>{show ? <EyeOff size={15}/> : <Eye size={15}/>}</button></div></div></div>{account ? <p className="account-preview"><CheckCircle2 size={14}/>已识别账号：<strong>{account}</strong></p> : <p className="field-hint">登录目标 ChatGPT 账号后，打开获取链接，复制完整 JSON 内容。<a href="/help">查看教程<ChevronRight size={12}/></a></p>}</div></> : <div className="form-section batch-section"><div className="field-heading"><StepLabel number="01" title="导入批量兑换内容"/><button type="button" className="subtle-link" onClick={() => fileRef.current?.click()}><Upload size={14}/>导入文件</button><input ref={fileRef} type="file" accept=".txt,.json" hidden onChange={importFile}/></div><label className="sr-only" htmlFor="batch-input">批量卡密和 Session</label><textarea id="batch-input" rows={9} spellCheck="false" autoComplete="off" maxLength={500000} value={batch} onChange={e => { setBatch(e.target.value); setParsed(null); }} placeholder={'第一组卡密\n{"user":{...},"account":{...},"accessToken":"..."}\n\n第二组卡密\n{"user":{...},"account":{...},"accessToken":"..."}'}/><p className="field-hint">每组两行：卡密 + 单行完整 Session。也支持 JSON 数组，最多 50 组。</p><button type="button" className="secondary small" onClick={preview}><CheckCheck size={15}/>校验并预览</button>{parsed && <div className="batch-preview"><b><CheckCircle2 size={15}/>已识别 {parsed.length} 组有效内容</b>{parsed.map((p,i) => <div key={i}><span>{String(i+1).padStart(2,'0')}</span><code>{mask(p.cardKey)}</code><span>{p.token.user.email}</span></div>)}</div>}</div>}
-    <div className="confirmation"><label className="check-label"><input type="checkbox" checked={agreed} onChange={e => setAgreed(e.target.checked)}/><span>我已确认兑换账号正确，并阅读<a href="/help#terms" target="_blank" rel="noopener noreferrer">兑换须知</a></span></label><p>提交后请勿重复兑换。订单待核验时，请联系商家确认最终结果。</p></div></fieldset>
-    <Alert>{error}</Alert>{!settings.configured && ready && <Alert type="info">商家尚未配置兑换服务，请联系商家或前往管理后台完成配置。</Alert>}{settings.maintenance && <Alert type="info">兑换服务正在维护，现有订单仍可查询。</Alert>}
-    <button className="primary submit-button" disabled={busy || disabled || !agreed} type="submit">{busy ? <><Spinner/>正在提交，请稍候</> : <>确认并开始兑换<ArrowRight size={18}/></>}</button>{busy && mode === 'batch' && <button type="button" className="subtle-link stop-batch" onClick={() => { stop.current = true; }}><Pause size={14}/>在当前订单提交后暂停</button>}
+    <div className="workspace"><main className="main-column"><section className="redeem-card"><div className="card-heading"><div><span className="section-kicker">REDEEM YOUR CODE</span><h2>开启您的兑换</h2></div><span className={`service-badge ${disabled ? 'offline' : ''}`}><span className="live-dot"/>{!ready ? '连接中' : settings.maintenance ? '维护中' : !settings.configured || !settings.verificationConfigured ? '待配置' : '服务已就绪'}</span></div>
+    <div className="tabs" role="tablist" aria-label="提交方式"><button type="button" role="tab" aria-selected={mode === 'single'} disabled={busy || verifying} className={mode === 'single' ? 'selected' : ''} onClick={() => { setMode('single'); setError(''); }}><KeyRound size={16}/>单个兑换</button><button type="button" role="tab" aria-selected={mode === 'batch'} disabled={busy || verifying || !settings.allowBatch} className={mode === 'batch' ? 'selected' : ''} onClick={() => { setMode('batch'); setError(''); }}><Layers size={16}/>批量兑换<span className="tab-tag">最多 50 组</span></button></div>
+    <form onSubmit={submit} className="redeem-form"><fieldset disabled={busy || verifying || disabled}>
+    {mode === 'single' ? <><div className="form-section"><StepLabel number="01" title="验证兑换卡密" extra="CDK CODE"/><label className="sr-only" htmlFor="card-key">兑换卡密</label><div className="input-icon"><KeyRound size={18}/><input id="card-key" required autoComplete="off" spellCheck="false" maxLength={128} value={cardKey} onChange={e => { setCardKey(e.target.value); setSingleVerification(null); setSession(''); setAgreed(false); setError(''); }} placeholder="请输入商家提供的兑换卡密"/></div><p className="field-hint">卡密区分大小写，验证通过后再填写账号信息。</p><button type="button" className="subtle-link recovery-toggle" onClick={()=>{setRecoverMode(!recoverMode);setSingleVerification(null);setSession('');setAgreed(false);setError('');}}>{recoverMode?'返回正常验证':'恢复结果未确认的原提交'}</button>{recoverMode&&<><label className="input-label" htmlFor="recovery-key">原提交标识</label><input id="recovery-key" value={recoveryKey} maxLength={128} autoComplete="off" onChange={e=>{setRecoveryKey(e.target.value);setSingleVerification(null);setSession('');setAgreed(false);}} placeholder="输入之前保存的提交标识"/><p className="field-hint">仅限当前浏览器恢复网络中断的原提交，内容必须与之前完全一致。</p></>}<div><button type="button" className="secondary verify-button" onClick={verifyCards} disabled={!cardKey.trim() || (recoverMode && !recoveryKey.trim())}><ShieldCheck size={16}/>{verifying ? verificationProgress : recoverMode ? '查找原提交' : '验证卡密'}</button>{singleVerification && <p className="verification-success" role="status"><CheckCircle2 size={16}/>{singleVerification.recoveryKey ? '已找到原提交' : '卡密验证通过'} · {singleVerification.planLabel}</p>}</div></div>
+    {singleVerification && <div className="form-section"><div className="field-heading"><StepLabel number="02" title="粘贴账号 Session"/><a className="subtle-link" href="https://chatgpt.com/api/auth/session" target="_blank" rel="noopener noreferrer">获取 Session<ArrowUpRight size={14}/></a></div><div className="session-field"><label className="sr-only" htmlFor="session-json">完整 Session JSON</label><textarea id="session-json" className={!show && session ? 'concealed' : ''} rows={5} required autoComplete="off" spellCheck="false" maxLength={100000} placeholder={'在此粘贴完整的 Session JSON\n{ "user": { ... }, "account": { ... }, "accessToken": "..." }'} value={session} onChange={e => setSession(e.target.value)}/><div className="textarea-bottom"><span><FileJson size={13}/>JSON 格式</span><div>{session && <button type="button" onClick={() => setSession('')}>清空</button>}<button type="button" aria-label={show ? '隐藏 Session' : '显示 Session'} onClick={() => setShow(!show)}>{show ? <EyeOff size={15}/> : <Eye size={15}/>}</button></div></div></div>{account ? <p className="account-preview"><CheckCircle2 size={14}/>已识别账号：<strong>{account}</strong></p> : <p className="field-hint">登录目标 ChatGPT 账号后，打开获取链接，复制完整 JSON 内容。<a href="/help">查看教程<ChevronRight size={12}/></a></p>}</div>}</> : <><div className="form-section batch-section"><div className="field-heading"><StepLabel number="01" title="验证批量卡密"/><button type="button" className="subtle-link" onClick={() => fileRef.current?.click()}><Upload size={14}/>导入卡密文件</button><input ref={fileRef} type="file" accept=".txt" hidden onChange={importFile}/></div><label className="sr-only" htmlFor="batch-input">批量卡密</label><textarea id="batch-input" rows={5} spellCheck="false" autoComplete="off" maxLength={6500} value={batch} onChange={e => { setBatch(e.target.value); setBatchVerifications(null); setBatchSessions(''); setAgreed(false); setError(''); }} placeholder={'每行一张卡密\n第一张卡密\n第二张卡密'}/><p className="field-hint">每行一张卡密，最多 50 张；全部通过验证后可填写对应 Session。</p><button type="button" className="secondary verify-button" onClick={verifyCards} disabled={!batch.trim()}><CheckCheck size={16}/>{verifying ? verificationProgress : '验证全部卡密'}</button>{batchVerifications && <p className="verification-success" role="status"><CheckCircle2 size={16}/>{batchVerifications.length} 张卡密全部通过验证</p>}</div>
+    {batchVerifications && <div className="form-section batch-section"><div className="field-heading"><StepLabel number="02" title="按顺序填写账号 Session"/><button type="button" className="subtle-link" onClick={()=>sessionFileRef.current?.click()}><Upload size={14}/>导入 Session 文件</button><input ref={sessionFileRef} type="file" accept=".txt,.json" hidden onChange={importSessions}/></div><p className="field-hint">请按上方卡密顺序，每行粘贴一个完整 Session JSON；也可使用 JSON 数组。</p><label className="sr-only" htmlFor="batch-sessions">批量 Session</label><textarea id="batch-sessions" rows={5} required spellCheck="false" autoComplete="off" maxLength={500000} value={batchSessions} onChange={e=>setBatchSessions(e.target.value)} placeholder={'第一张卡密对应的完整 Session JSON\n第二张卡密对应的完整 Session JSON'}/></div>}</>}
+    {(mode === 'single' ? singleVerification : batchVerifications) && <div className="confirmation"><label className="check-label"><input type="checkbox" checked={agreed} onChange={e => setAgreed(e.target.checked)}/><span>我已确认兑换账号正确，并阅读<a href="/help#terms" target="_blank" rel="noopener noreferrer">兑换须知</a></span></label><p>提交后请勿重复兑换。订单待核验时，请联系商家确认最终结果。</p></div>}</fieldset>
+    <Alert>{error}</Alert>{ready && (!settings.configured || !settings.verificationConfigured) && <Alert type="info">商家尚未完成兑换服务及卡密验证配置，请联系商家。</Alert>}{settings.maintenance && <Alert type="info">兑换服务正在维护，现有订单仍可查询。</Alert>}
+    {(mode === 'single' ? singleVerification : batchVerifications) && <button className="primary submit-button" disabled={busy || verifying || disabled || !agreed} type="submit">{busy ? <><Spinner/>正在提交，请稍候</> : <>确认并开始兑换<ArrowRight size={18}/></>}</button>}{busy && mode === 'batch' && <button type="button" className="subtle-link stop-batch" onClick={() => { stop.current = true; }}><Pause size={14}/>在当前订单提交后暂停</button>}
     <div className="form-footnote"><LockKeyhole size={12}/>凭据仅用于处理兑换 · 本站数据库不保存 Session</div></form></section>
     {items.length > 0 && <section className="result-card"><div className="result-heading"><h3>提交回执<span>{items.filter(i=>i.state === 'submitted').length} / {items.length}</span></h3><button className="subtle-link" onClick={() => downloadJson('limen-receipts.json', items)}><Download size={14}/>保存回执</button></div><p className="field-hint">已受理不代表兑换成功，请以下方订单最终状态为准。暂停后的未提交项目可重新粘贴后提交。</p>{items.map((item,i) => <div className="receipt-row" key={i}><span className="receipt-index">{String(item.index).padStart(2,'0')}</span><div><b>{item.email}</b><code>{item.order?.order_no || item.card}</code>{item.message && <p className="row-error">{item.message}</p>}</div><span className={`badge ${item.state === 'submitted' ? 'success' : item.state === 'error' ? 'failed' : 'pending'}`}>{({waiting:'未提交',submitting:'提交中',submitted:'已受理',unknown:'结果未确定',error:'提交未完成'})[item.state]}</span></div>)}{attempt && <p className="field-hint mono">最近提交标识：{attempt}</p>}</section>}
     {orders.length > 0 && <OrderResults orders={orders} setOrders={setOrders} auto/>}
@@ -106,7 +150,7 @@ function OrdersPage() {
 }
 const FAQ = [
   ['如何获取完整的 Session？', <>先在浏览器登录需要兑换的 ChatGPT 账号，再打开 <a href="https://chatgpt.com/api/auth/session" target="_blank" rel="noopener noreferrer">chatgpt.com/api/auth/session <ExternalLink size={12}/></a>，复制页面返回的完整 JSON。需包含 user.email、account.id 和有效的 accessToken；无需向本站提供账号密码。</>],
-  ['批量兑换需要什么格式？', <>每组两行，第一行为卡密，第二行为完整的单行 Session JSON。空行会被忽略，也可导入 .txt 或 .json 文件。支持 JSON 数组，结构为 <code>[{'{'}"cardKey":"您的卡密","token":{'{'}完整 Session{'}'}{'}'}]</code>。每批最多 50 组，同一卡密及账号不能重复。</>],
+  ['批量兑换需要什么格式？', <>先输入或导入卡密，每行一张。全部验证通过后，按卡密的相同顺序输入 Session，每行一个完整 JSON，也可导入 .txt 文件或 Session JSON 数组。每批最多 50 组，同一卡密及账号不能重复。</>],
   ['点击提交后，是否就代表兑换成功？', '提交成功仅代表订单已受理。请保存完整订单号，并在订单查询页等待“兑换成功”的最终状态。不要因为等待时间较长重复提交。'],
   ['订单显示“待核验”应该怎么做？', '待核验既不是成功，也不是失败。请查看核验说明；如果标记需要人工核实，自动查询会停止，请联系商家。支付未确认不能被视为未扣款。此时禁止重复创建充值订单。'],
   ['网络中断或超时了，可以重新提交吗？', '网络错误不代表订单未创建。已有订单号时先查询原订单；未取得订单号时保留原始内容，在同一浏览器标签页使用完全相同内容重试，系统会复用原提交标识。请保存回执中的提交标识；若已关闭标签页或修改内容，先联系商家核实。'],
@@ -130,7 +174,7 @@ function Admin({ session, onSession }) {
   async function load() { setError(''); try { const [o,s] = await Promise.all([api('/admin/overview'),api('/admin/settings')]);setOverview(o);setSettings(s); }catch(e){setError(e.message); if(e.status===401)onSession(s=>({...s,admin:false}));} }
   useEffect(()=>{if(session.admin)load();},[session.admin]);
   async function login(e){e.preventDefault();setBusy(true);setError('');try{await api('/admin/login',{method:'POST',body:{password}});setPassword('');onSession(s=>({...s,admin:true}));}catch(e){setError(e.message);}finally{setBusy(false);}}
-  async function save(e){e.preventDefault();setBusy(true);setError('');setSuccess('');try{const {siteName,announcement,maintenance,allowBatch,supportText}=settings;const data=await api('/admin/settings',{method:'PUT',body:{siteName,announcement,maintenance,allowBatch,supportText,...(key?{apiKey:key}:{}),...(clearKey?{clearApiKey:true}:{})}});setSettings(s=>({...s,...data}));onSession(s=>({...s,settings:data}));setKey('');setClearKey(false);setSuccess('配置已安全保存，将对新请求生效。');}catch(e){setError(e.message);}finally{setBusy(false);}}
+  async function save(e){e.preventDefault();setBusy(true);setError('');setSuccess('');try{const {siteName,announcement,maintenance,allowBatch,supportText,verificationSite}=settings;const data=await api('/admin/settings',{method:'PUT',body:{siteName,announcement,maintenance,allowBatch,supportText,verificationSite,...(key?{apiKey:key}:{}),...(clearKey?{clearApiKey:true}:{})}});setSettings(s=>({...s,...data}));onSession(s=>({...s,settings:data}));setKey('');setClearKey(false);setSuccess('配置已安全保存，将对新请求生效。');}catch(e){setError(e.message);}finally{setBusy(false);}}
   if(!session.admin)return <div className="login-layout"><div className="login-art"><span className="eyebrow">THE OTHER SIDE OF SIMPLE.</span><h1>有序管理，<br/><em>从容运营。</em></h1><p>所有兑换，一个工作台。<br/>安全地连接您的商户服务。</p><div className="login-art-icon"><Leaf size={80} strokeWidth={0.8}/></div></div><section className="login-card"><span className="login-lock"><LockKeyhole size={23}/></span><span className="section-kicker">MERCHANT WORKSPACE</span><h2>欢迎回到商户后台</h2><p>请输入初始化时生成的管理员密码。</p><form onSubmit={login}><label className="input-label" htmlFor="admin-password">管理员密码</label><input id="admin-password" type="password" autoComplete="current-password" required maxLength={256} value={password} onChange={e=>setPassword(e.target.value)} placeholder="请输入管理员密码"/><Alert>{error}</Alert><button className="primary" disabled={busy||!password}>{busy?<Spinner/>:<>安全登录<ArrowRight size={17}/></>}</button></form><a className="subtle-link" href="/"><ArrowLeft size={14}/>返回兑换中心</a></section></div>;
   const tabs=[['overview',LayoutDashboard,'工作台'],['orders',Layers,'订单管理'],['direct',CreditCard,'银行卡直充'],['lookup',Search,'卡号邮箱补查'],['settings',Settings2,'服务配置']];
   return <div className="admin-layout"><aside className="admin-sidebar"><span className="section-kicker">MERCHANT WORKSPACE</span><h2>商户工作台</h2><nav>{tabs.map(([id,Icon,title])=><button className={tab===id?'active':''} key={id} onClick={()=>{setTab(id);setError('');setSuccess('');}}><Icon size={18}/>{title}<ChevronRight size={14}/></button>)}</nav><div className="admin-security"><ShieldCheck size={20}/><p>密钥由服务器加密保存，前端仅显示配置状态。</p></div><button className="subtle-link" onClick={async()=>{try{await api('/admin/logout',{method:'POST',body:{}});onSession(s=>({...s,admin:false}));}catch(e){setError(e.message);}}}><LogOut size={16}/>退出登录</button></aside><main className="admin-main"><div className="admin-heading"><div><span className="eyebrow">LESS FRICTION. MORE CONTROL.</span><h1>{tabs.find(t=>t[0]===tab)[2]}</h1></div><button className="secondary small" onClick={load}><RefreshCw size={15}/>刷新数据</button></div><Alert>{error}</Alert>{success&&<Alert type="info">{success}</Alert>}
@@ -140,6 +184,7 @@ function Admin({ session, onSession }) {
       <section className="settings-column"><div className="settings-title"><KeyRound size={20}/><div><h3>API 连接</h3><p>密钥保存后无法读回；留空表示保留现有配置。</p></div></div>
         <label className="input-label" htmlFor="api-base">API 地址</label><input id="api-base" readOnly value={settings.apiBase}/><p className="field-hint">固定为文档提供的 HTTPS 地址，禁止任意代理目的地址。</p>
         <label className="input-label" htmlFor="api-key">API Key <span className={settings.configured?'configured':''}>{settings.configured?'已配置':'未配置'}</span></label><input id="api-key" type="password" autoComplete="new-password" value={key} onChange={e=>{setKey(e.target.value);setClearKey(false);}} maxLength={512} placeholder={settings.configured?'留空保留原密钥，填写则替换':'输入商户个人中心生成的 API Key'}/>
+        <label className="input-label" htmlFor="verification-site">上游兑换站标识 <span>{settings.verificationConfigured?'已配置':'未配置'}</span></label><input id="verification-site" autoComplete="off" value={settings.verificationSite || ''} maxLength={32} pattern="[a-z0-9][a-z0-9-]{2,31}" onChange={e=>setSettings({...settings,verificationSite:e.target.value.toLowerCase().trim()})} placeholder="例如 m-702"/><p className="field-hint">填写上游商户兑换站地址 /s/ 后面的标识，必须与 API Key 属于同一商户。</p>
         {settings.configured&&<label className="check-label danger-check"><input type="checkbox" checked={clearKey} onChange={e=>{setClearKey(e.target.checked);if(e.target.checked)setKey('');}}/>删除当前密钥并停止新兑换</label>}
       </section>
       <section className="settings-column"><div className="settings-title"><Settings2 size={20}/><div><h3>网站设置</h3><p>修改后会对前台新访问生效。</p></div></div>

@@ -24,11 +24,13 @@ export const createSchema = z.discriminatedUnion('orderType', [cdk, direct]);
 export const uuid = z.uuid();
 export const querySchema = z.object({ order_no: z.union([uuid, z.array(uuid).min(1).max(100)]) }).strict();
 export const lookupSchema = z.object({ cardNumber: z.string().regex(/^\d{12,19}$/), email: z.email().max(255) }).strict();
+export const verifyCardSchema = z.object({ cardKey: z.string().trim().min(1).max(128) }).strict();
+export const recoverCardSchema = verifyCardSchema.extend({ submissionKey: z.string().regex(/^[A-Za-z\d_-]{1,128}$/) }).strict();
 export const settingsSchema = z.object({
   apiKey: z.string().trim().min(8).max(512).regex(/^[\x21-\x7e]+$/).optional(),
   clearApiKey: z.boolean().optional(), siteName: z.string().trim().min(1).max(30),
   announcement: z.string().trim().max(300), maintenance: z.boolean(), allowBatch: z.boolean(),
-  supportText: z.string().trim().max(150),
+  supportText: z.string().trim().max(150), verificationSite: z.string().trim().regex(/^(?:[a-z0-9][a-z0-9-]{2,31})?$/).optional(),
 }).strict().refine(v => !(v.apiKey && v.clearApiKey), '不能同时设置和删除密钥');
 export function parse(schema, input) {
   const result = schema.safeParse(input);

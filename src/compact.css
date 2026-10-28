@@ -18,6 +18,10 @@ input::placeholder, textarea::placeholder { color: #687867; font-size: 13px; opa
 .badge, .service-badge, .tab-tag { color: #405b3f; font-size: 12px; }
 .session-field textarea, textarea { font-size: 13px; }
 .account-preview { color: #405b3f; font-size: 13px; }
+.verify-button { margin-top: 10px; min-height: 38px; padding: 8px 16px; }
+.recovery-toggle { display: inline-flex; margin: 5px 0 0 12px; }
+.form-section > .field-hint:has(+ .recovery-toggle) { display: inline; }
+.verification-success { display: inline-flex; align-items: center; gap: 6px; color: #355d37; font-size: 13px; margin: 8px 0 0 12px; }
 .alert, .field-heading > .subtle-link { font-size: 13px; }
 .textarea-bottom { color: #52634f; font-size: 12px; }
 .audit-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -55,6 +59,9 @@ input::placeholder, textarea::placeholder { color: #687867; font-size: 13px; opa
   .field-hint { margin-top: 5px; line-height: 1.45; }
   .session-field textarea { min-height: 65px; height: 65px; padding: 8px 12px 4px; line-height: 1.4; }
   .batch-section textarea { min-height: 150px; height: 150px; }
+  .redeem-form fieldset:has(#batch-sessions) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }
+  .redeem-form fieldset:has(#batch-sessions) .form-section + .form-section { margin-top: 0; }
+  .redeem-form fieldset:has(#batch-sessions) .confirmation { grid-column: 1 / -1; }
   .textarea-bottom { padding: 4px 12px; }
   .confirmation { margin-top: 12px; padding-top: 10px; }
   .confirmation > p { margin-top: 3px; line-height: 1.4; }

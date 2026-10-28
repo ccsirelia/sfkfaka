@@ -2,10 +2,10 @@ import express from 'express';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import cookieParser from 'cookie-parser';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { security, verifyPassword } from './security.mjs';
 import { openStore } from './store.mjs';
-import { createSchema, querySchema, lookupSchema, settingsSchema, parse } from './validation.mjs';
+import { createSchema, querySchema, lookupSchema, verifyCardSchema, recoverCardSchema, settingsSchema, parse } from './validation.mjs';
 
 export const UPSTREAM = 'https://admin-lm.zdhxylc.shop/api/v1';
 const active = ['submitting', 'unknown', 'pending', 'processing', 'pending_verification'];
@@ -65,7 +65,7 @@ export function createApp({ config, fetcher = fetch }) {
   });
   const isAdmin = req => req.session.admin > Date.now() && req.session.password_tag === crypto.hash(config.passwordHash);
   const adminOnly = (req, res, next) => isAdmin(req) ? next() : next(fault(401, '请先登录管理后台', 'ADMIN_REQUIRED'));
-  const publicSettings = () => { const { apiKey, ...settings } = store.settings(); return { ...settings, configured: !!apiKey }; };
+  const publicSettings = () => { const { apiKey, verificationSite, ...settings } = store.settings(); return { ...settings, configured: !!apiKey, verificationConfigured: !!verificationSite }; };
   app.get('/api/session', (req, res) => res.json({ csrfToken: req.csrf, admin: isAdmin(req), settings: publicSettings() }));
   app.get('/api/health', (_req, res) => res.json({ ok: true }));
   app.post('/api/admin/login', limiter(8, 15 * 60000), async (req, res) => {
@@ -80,7 +80,7 @@ export function createApp({ config, fetcher = fetch }) {
     db.prepare('DELETE FROM sessions WHERE id=?').run(req.session.id);
     store.audit('logout'); res.json({ csrfToken: issued.csrf, admin: false });
   });
-  app.get('/api/admin/settings', adminOnly, (_req, res) => res.json({ ...publicSettings(), apiBase: UPSTREAM }));
+  app.get('/api/admin/settings', adminOnly, (_req, res) => res.json({ ...publicSettings(), verificationSite: store.settings().verificationSite, apiBase: UPSTREAM }));
   app.put('/api/admin/settings', adminOnly, (req, res) => {
     const value = parse(settingsSchema, req.body);
     const { clearApiKey, apiKey, ...other } = value;
@@ -91,12 +91,15 @@ export function createApp({ config, fetcher = fetch }) {
   });
   // A shared budget keeps all visitors together below the provider's 120/IP/min limit.
   let requests = [];
+  function reserveUpstreamRequest() {
+    const now = Date.now(); requests = requests.filter(t => t > now - 60000);
+    if (requests.length >= 100) throw fault(429, '当前服务繁忙，请稍后重试', 'UPSTREAM_BUDGET');
+    requests.push(now);
+  }
   async function upstream(endpoint, body, idempotencyKey) {
     const apiKey = store.settings().apiKey;
     if (!apiKey) throw fault(503, '服务尚未配置，请联系商家完成 API 配置', 'NOT_CONFIGURED');
-    const now = Date.now(); requests = requests.filter(t => t > now - 60000);
-    if (requests.length >= 100) throw fault(429, '当前服务繁忙，请稍后使用相同提交标识重试', 'UPSTREAM_BUDGET');
-    requests.push(now);
+    reserveUpstreamRequest();
     let response;
     try {
       response = await fetcher(`${UPSTREAM}${endpoint}`, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(25000),
@@ -120,6 +123,48 @@ export function createApp({ config, fetcher = fetch }) {
     }
     return payload.data;
   }
+  function proofSignature(owner, site, cardKey, expires) {
+    return crypto.hash(`card-verification:${owner}:${site}:${crypto.hash(cardKey)}:${expires}`);
+  }
+  function validProof(proof, owner, site, cardKey) {
+    if (!site || typeof proof !== 'string' || !/^\d{13}\.[a-f0-9]{64}$/.test(proof)) return false;
+    const [expires, signature] = proof.split('.');
+    const time = Number(expires);
+    if (time <= Date.now() || time > Date.now() + 30 * 60000) return false;
+    return timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(proofSignature(owner, site, cardKey, expires), 'hex'));
+  }
+  app.post('/api/card-keys/verify', limiter(60, 60000), async (req, res) => {
+    const { cardKey } = parse(verifyCardSchema, req.body);
+    const settings = store.settings();
+    if (settings.maintenance) throw fault(503, '兑换服务暂时维护中，请稍后再试', 'MAINTENANCE');
+    if (!settings.apiKey || !settings.verificationSite) throw fault(503, '卡密验证尚未配置，请联系商家', 'VERIFICATION_NOT_CONFIGURED');
+    if (req.get('x-batch-mode') === '1' && !settings.allowBatch) throw fault(403, '批量提交暂未开放');
+    const cardHash = crypto.hash(cardKey);
+    if (db.prepare("SELECT id FROM submissions WHERE card_hash=? AND state!='failed'").get(cardHash)) throw fault(409, '此卡密已有订单或未确定的提交，请先查询原订单，不要重复充值。', 'ORDER_LOCKED');
+    reserveUpstreamRequest();
+    let response, data;
+    try {
+      response = await fetcher(`https://admin-lm.zdhxylc.shop/api/v2/sites/${encodeURIComponent(settings.verificationSite)}/preview`, {
+        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15000), headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ redeem_code: cardKey }),
+      });
+      data = await response.json();
+    } catch { throw fault(503, '暂时无法验证卡密，请稍后重试', 'VERIFICATION_UNAVAILABLE'); }
+    if (!response.ok) {
+      if (response.status === 400 || response.status === 409) throw fault(400, '卡密无效、不可用或不属于本站，请检查后联系商家', 'CARD_INVALID');
+      if (response.status === 429) throw fault(429, '卡密验证过于频繁，请稍后重试', 'RATE_LIMIT');
+      throw fault(503, '暂时无法验证卡密，请稍后重试', 'VERIFICATION_UNAVAILABLE');
+    }
+    if (!data || typeof data !== 'object' || typeof (data.plan_label || data.plan) !== 'string' || !(data.plan_label || data.plan).trim()) throw fault(502, '上游验证响应异常，请稍后重试', 'VERIFICATION_UNAVAILABLE');
+    const expires = String(Date.now() + 30 * 60000);
+    res.json({ verificationToken: `${expires}.${proofSignature(req.session.owner, settings.verificationSite, cardKey, expires)}`, expiresAt: Number(expires), planLabel: safeText(data.plan_label || data.plan) });
+  });
+  app.post('/api/card-keys/recover', limiter(20, 60000), (req, res) => {
+    const { cardKey, submissionKey } = parse(recoverCardSchema, req.body);
+    const id = crypto.hash(`${req.session.owner}:${submissionKey}`);
+    const row = db.prepare("SELECT card_hash FROM submissions WHERE id=? AND owner=? AND state='unknown'").get(id, req.session.owner);
+    if (!row || row.card_hash !== crypto.hash(cardKey)) throw fault(404, '未找到匹配的待确认提交，请核对卡密和原提交标识，或联系商家。', 'RECOVERY_NOT_FOUND');
+    res.json({ recoverable: true, message: '已找到原提交。请填写原来的 Session，系统只会尝试恢复相同内容。' });
+  });
   function rememberOrder(data, owner) { const order = cleanOrder(data); store.saveOrder(order, owner); return order; }
   app.post('/api/orders', limiter(60, 3600000), async (req, res) => {
     const input = parse(createSchema, req.body);
@@ -139,6 +184,10 @@ export function createApp({ config, fetcher = fetch }) {
       return res.json({ order: crypto.decrypt(row.payload), reused: true });
     }
     if (existing?.state === 'submitting') throw fault(409, '原请求正在提交，请等待后查询', 'IN_FLIGHT');
+    // An uncertain earlier submission must be retried with its original key even if its card is now consumed.
+    if (input.orderType === 'card_key' && !existing && !validProof(req.get('x-card-verification'), req.session.owner, settings.verificationSite, input.cardKey)) {
+      throw fault(403, '请先验证当前卡密；验证过期或修改卡密后需要重新验证', 'CARD_VERIFICATION_REQUIRED');
+    }
     const cardHash = input.orderType === 'card_key' ? crypto.hash(input.cardKey) : null;
     const accountHash = crypto.hash(input.token.account.id);
     if (!existing) {
