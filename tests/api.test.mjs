@@ -9,6 +9,7 @@ import { createApp, UPSTREAM } from '../server/app.mjs';
 import { loadConfig, security } from '../server/security.mjs';
 import { parseCardList, parseBatchSessions } from '../src/api.js';
 import { mountProduction } from '../server/static.mjs';
+import { selectWindowsProxy } from '../server/outbound-proxy.mjs';
 import express from 'express';
 
 const password = 'Integration-only-password-123!';
@@ -211,6 +212,13 @@ test('安全响应头、防缓存与请求体限制生效',async t=>{
 test('生产配置拒绝默认密钥和非 HTTPS 地址',()=>{
   assert.throws(()=>loadConfig({}),/ENCRYPTION_KEY/);
   assert.throws(()=>loadConfig({ENCRYPTION_KEY:'a'.repeat(64),SESSION_SECRET:'b'.repeat(64),ADMIN_PASSWORD_HASH:passwordHash,NODE_ENV:'production',APP_ORIGIN:'http://example.com'}),/HTTPS/);
+});
+test('Windows 系统代理仅在启用且上游未被排除时使用',()=>{
+  assert.equal(selectWindowsProxy({enabled:'0x1',server:'127.0.0.1:7890',bypass:'<local>;*.example.com'}),'http://127.0.0.1:7890/');
+  assert.equal(selectWindowsProxy({enabled:'0x1',server:'http=127.0.0.1:8080;https=127.0.0.1:7890'}),'http://127.0.0.1:7890/');
+  assert.equal(selectWindowsProxy({enabled:'0x1',server:'127.0.0.1:7890',bypass:'*.zdhxylc.shop'}),null);
+  assert.equal(selectWindowsProxy({enabled:'0x0',server:'127.0.0.1:7890'}),null);
+  assert.equal(selectWindowsProxy({enabled:'0x1',server:'socks=socks5://127.0.0.1:7890'}),null);
 });
 test('生产静态入口全部可访问，HTML 禁止长期缓存',async t=>{
   const directory=mkdtempSync(path.join(tmpdir(),'limen-test-'));

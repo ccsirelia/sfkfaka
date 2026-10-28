@@ -23,6 +23,8 @@ npm run dev
 
 开发模式仅绑定 `127.0.0.1`。请使用配置中的 `http://localhost:3200` 访问，避免与 `APP_ORIGIN` 不一致导致来源校验失败。API Key 通过后台设置，**不要放进前端代码或 `VITE_*` 环境变量**。
 
+Windows 上，服务启动时会自动读取已启用的系统 HTTPS 代理，并遵循上游域名的代理例外；显式设置的 `HTTPS_PROXY` 优先。系统代理设置改变后需重启服务。关闭自动检测可在 `.env` 中设置 `USE_WINDOWS_SYSTEM_PROXY=0`。Linux 和 Docker 可通过 `HTTPS_PROXY` / `NO_PROXY` 显式配置代理。自动检测不处理 PAC 自动配置脚本；这种情况下请显式配置 `HTTPS_PROXY`。TLS 证书仍会正常校验。
+
 ## 已实现能力
 
 | 入口 | 能力 |
@@ -128,7 +130,7 @@ npm run build
 npm audit --omit=dev
 ```
 
-25 项测试使用独立临时数据库及内存模拟上游，覆盖卡密预验证、凭证绑定和过期、权限、CSRF、去重、并发、超时恢复、待核验、批量查询、Session 校验及敏感数据不落库等场景，**不会调用真实充值接口、产生真实订单或扣费**。真实联调需要正确的商户站点标识、API Key、有效 Session 和卡密 / 支付授权，尚未执行。
+26 项测试使用独立临时数据库及内存模拟上游，覆盖系统代理配置、卡密预验证、凭证绑定和过期、权限、CSRF、去重、并发、超时恢复、待核验、批量查询、Session 校验及敏感数据不落库等场景，**不会调用真实充值接口、产生真实订单或扣费**。真实联调需要正确的商户站点标识、API Key、有效 Session 和卡密 / 支付授权，尚未执行。
 
 已用浏览器检查桌面兑换页、后台登录与设置保存、订单查询，以及 390px 手机布局。界面截图见 `artifacts/frontend.jpg`、`artifacts/admin.jpg`、`artifacts/mobile.jpg`。本机没有 Docker，容器构建、Caddy 证书申请及公网部署尚未实测。
 
