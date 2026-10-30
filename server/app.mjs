@@ -5,6 +5,7 @@ import cookieParser from 'cookie-parser';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { security, verifyPassword } from './security.mjs';
 import { openStore } from './store.mjs';
+import { subscriptionSchema, subscriptionInput, cleanSubscription, SUBSCRIPTION_URL } from './subscription.mjs';
 import { createSchema, querySchema, lookupSchema, verifyCardSchema, recoverCardSchema, settingsSchema, parse } from './validation.mjs';
 
 export const UPSTREAM = 'https://admin-lm.zdhxylc.shop/api/v1';
@@ -126,6 +127,25 @@ export function createApp({ config, fetcher = fetch }) {
   function proofSignature(owner, site, cardKey, expires) {
     return crypto.hash(`card-verification:${owner}:${site}:${crypto.hash(cardKey)}:${expires}`);
   }
+  app.post('/api/subscription/query', limiter(10, 60000), async (req, res) => {
+    const input = parse(subscriptionSchema, req.body);
+    const session = subscriptionInput(input.session);
+    reserveUpstreamRequest();
+    let response, data;
+    try {
+      response = await fetcher(SUBSCRIPTION_URL, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(25000),
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chatgpt_token: session }) });
+      data = await response.json();
+    } catch { throw fault(503, '暂时无法连接订阅查询服务，请稍后重试。', 'SUBSCRIPTION_UNAVAILABLE'); }
+    if (!response.ok) {
+      if (response.status === 429) throw fault(429, '查询过于频繁，请稍后重试。', 'RATE_LIMIT');
+      if ([400, 401, 422].includes(response.status)) throw fault(400, '无法确认账号或 Session 已过期，请重新获取完整 Session 后再试。', 'INVALID_SESSION');
+      throw fault(503, '订阅查询服务暂时不可用，请稍后重试。', 'SUBSCRIPTION_UNAVAILABLE');
+    }
+    const subscription = cleanSubscription(data);
+    if (!subscription) throw fault(502, '订阅查询响应异常，暂时无法确认订阅状态。', 'SUBSCRIPTION_INVALID');
+    res.json({ subscription });
+  });
   function validProof(proof, owner, site, cardKey) {
     if (!site || typeof proof !== 'string' || !/^\d{13}\.[a-f0-9]{64}$/.test(proof)) return false;
     const [expires, signature] = proof.split('.');

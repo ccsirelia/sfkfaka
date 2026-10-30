@@ -225,10 +225,67 @@ test('生产静态入口全部可访问，HTML 禁止长期缓存',async t=>{
   writeFileSync(path.join(directory,'index.html'),'<!doctype html><html lang="zh-CN"><title>Production smoke</title></html>');
   t.after(()=>{assert.ok(path.resolve(directory).startsWith(path.join(tmpdir(),'limen-test-')));rmSync(directory,{recursive:true,force:true});});
   const app=express();mountProduction(app,directory);
-  for(const route of ['/','/recharge','/orders','/help','/limdh-admin','/limdh-admin/settings']){
+  for(const route of ['/','/recharge','/orders','/subscription','/help','/limdh-admin','/limdh-admin/settings']){
     const r=await request(app).get(route).expect(200);assert.match(r.text,/Production smoke/);assert.equal(r.headers['cache-control'],'no-cache');
   }
   await request(app).get('/admin').expect(404);await request(app).get('/.env').expect(404);await request(app).get('/data/limen.sqlite').expect(404);
+});
+
+test('订阅查询仅发送必要身份字段，返回白名单信息且不保存凭据', async t => {
+  const f=await fixture(t,(url, options)=>{
+    assert.equal(url,'https://admin-lm.zdhxylc.shop/api/v2/recharge/subscription-query');
+    assert.equal(options.redirect,'error'); assert.equal(options.headers['X-API-Key'],undefined);
+    return Response.json({plan:'plus',has_active_subscription:true,email:'tester@example.com',expires_at:'2030-12-01T00:00:00Z',subscription_started_at:'2030-11-01T00:00:00Z',will_renew:false,refreshed_token:'MUST-NOT-LEAK',accessToken:'MUST-NOT-LEAK'});
+  });
+  const c=await f.client(); const session=token();
+  const r=await c.send('post','/api/subscription/query',{session:JSON.stringify(session)}).expect(200);
+  assert.equal(r.body.subscription.active,true); assert.equal(r.body.subscription.willRenew,false);
+  assert.equal(r.body.subscription.plan,'plus'); assert.equal(r.body.subscription.expiresAt,'2030-12-01T00:00:00Z');
+  const forwarded=JSON.parse(f.calls[0].body.chatgpt_token);
+  assert.equal(forwarded.accessToken,session.accessToken); assert.deepEqual(forwarded.user,{email:session.user.email});
+  assert.equal(forwarded.sessionToken,undefined); assert.equal(JSON.stringify(r.body).includes('MUST-NOT-LEAK'),false);
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM orders').get().n,0);
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM submissions').get().n,0);
+  for(const name of readdirSync(f.config.dataDir)){
+    const bytes=readFileSync(path.join(f.config.dataDir,name));
+    for(const secret of [session.accessToken,session.sessionToken,'tester@example.com'])assert.equal(bytes.includes(Buffer.from(secret)),false);
+  }
+});
+
+test('订阅查询支持 accessToken，免费账号及未知续费状态如实返回', async t => {
+  const f=await fixture(t,()=>Response.json({plan:'free',has_active_subscription:false}));const c=await f.client();
+  const r=await c.send('post','/api/subscription/query',{session:token().accessToken}).expect(200);
+  assert.equal(r.body.subscription.active,false);assert.equal(r.body.subscription.willRenew,null);assert.equal(r.body.subscription.expiresAt,null);
+});
+
+test('订阅查询拒绝无效输入和跨站请求，不向上游转发', async t => {
+  const f=await fixture(t);const c=await f.client();
+  await c.send('post','/api/subscription/query',{session:'invalid-token'}).expect(422);
+  const expired=token();expired.accessToken=`eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({iat:1,exp:2})).toString('base64url')}.expired`;
+  await c.send('post','/api/subscription/query',{session:JSON.stringify(expired)}).expect(422);
+  await c.send('post','/api/subscription/query',{session:token().accessToken,url:'https://other.example'}).expect(422);
+  await c.agent.post('/api/subscription/query').send({session:token().accessToken}).expect(403);
+  await c.send('post','/api/subscription/query',{session:token().accessToken},{Origin:'https://other.example'}).expect(403);
+  assert.equal(f.calls.length,0);
+});
+
+test('订阅服务异常不能误报无订阅，不透传上游错误或凭据', async t => {
+  let mode='bad';const f=await fixture(t,()=>{
+    if(mode==='bad')return Response.json({plan:'free'});
+    if(mode==='invalid')return Response.json({detail:'SECRET-UPSTREAM-TOKEN'},{status:400});
+    if(mode==='rate')return Response.json({},{status:429});
+    throw new Error('SECRET-UPSTREAM-TOKEN');
+  });const c=await f.client();const body={session:token().accessToken};
+  const bad=await c.send('post','/api/subscription/query',body).expect(502);assert.equal(bad.body.subscription,undefined);
+  mode='invalid';const invalid=await c.send('post','/api/subscription/query',body).expect(400);assert.equal(JSON.stringify(invalid.body).includes('SECRET'),false);
+  mode='rate';await c.send('post','/api/subscription/query',body).expect(429);
+  mode='outage';const outage=await c.send('post','/api/subscription/query',body).expect(503);assert.equal(JSON.stringify(outage.body).includes('SECRET'),false);
+});
+
+test('订阅查询独立限流，每分钟超过十次不再调用上游', async t => {
+  const f=await fixture(t,()=>Response.json({plan:'free',has_active_subscription:false}));const c=await f.client();const body={session:token().accessToken};
+  for(let i=0;i<10;i++)await c.send('post','/api/subscription/query',body).expect(200);
+  await c.send('post','/api/subscription/query',body).expect(429);assert.equal(f.calls.length,10);
 });
 test('管理员会话绑定密码版本，密码更改后旧权限失效',async t=>{
   const f=await fixture(t);await f.admin.agent.get('/api/admin/settings').expect(200);
