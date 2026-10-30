@@ -1,8 +1,9 @@
+import { appPath } from '../app-path.mjs';
 let csrfToken = '';
 export async function api(path, { method = 'GET', body, headers = {}, ...options } = {}) {
   let response;
   try {
-    response = await fetch(`/api${path}`, { method, credentials: 'same-origin', headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(method !== 'GET' ? { 'X-CSRF-Token': csrfToken } : {}), ...headers }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), ...options });
+    response = await fetch(appPath(`/api${path}`), { method, credentials: 'same-origin', headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(method !== 'GET' ? { 'X-CSRF-Token': csrfToken } : {}), ...headers }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), ...options });
   } catch { throw Object.assign(new Error('网络连接中断。如正在提交，请保留原内容并使用相同提交标识重试。'), { code: 'RESULT_UNKNOWN' }); }
   let result;
   try { result = await response.json(); } catch { throw Object.assign(new Error('服务器响应异常，请保留原提交内容后重试。'), { code: 'RESULT_UNKNOWN' }); }

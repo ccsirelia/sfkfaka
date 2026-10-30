@@ -14,10 +14,10 @@ npm run dev
 
 `setup` 生成本机 `.env`、独立加密密钥及随机管理员密码，密码仅在终端显示一次。已有 `.env` 时拒绝覆盖。首次初始化后请保存密码。
 
-- 前台兑换：<http://localhost:3200/>
-- 订单查询：<http://localhost:3200/orders>
-- 使用帮助：<http://localhost:3200/help>
-- 后台管理：<http://localhost:3200/limdh-admin>
+- 前台兑换：<http://localhost:3200/kmdh/>
+- 订单查询：<http://localhost:3200/kmdh/orders>
+- 使用帮助：<http://localhost:3200/kmdh/help>
+- 后台管理：<http://localhost:3200/kmdh/limdh-admin>
 
 后台登录后打开「服务配置」，填写商户 API Key，以及上游商户兑换站地址中 `/s/` 后的站点标识并保存。站点必须已启用，且必须与 API Key 属于同一商户；例如地址为 `https://admin-lm.zdhxylc.shop/s/example` 时填写 `example`。未配置时页面明确展示「待配置」。配置状态仅表示已保存，不代表密钥有效或已确认两个配置属于同一商户。
 
@@ -31,7 +31,7 @@ Windows 上，服务启动时会自动读取已启用的系统 HTTPS 代理，�
 | --- | --- |
 | 前台 | 上游验证单个 CDK，验证通过后填写 Session、账号预览、提交确认 |
 | 前台批量 | 先导入卡密并逐张验证，通过后按顺序输入或导入 Session、最多 50 组、顺序提交、暂停后续提交、下载回执 |
-| 订阅查询 | `/subscription` 输入完整 Session 或 accessToken，实时查询 ChatGPT 套餐、有效状态、到期时间及续费状态，不保存查询凭据 |
+| 订阅查询 | `/kmdh/subscription` 输入完整 Session 或 accessToken，实时查询 ChatGPT 套餐、有效状态、到期时间及续费状态，不保存查询凭据 |
 | 订单查询 | 单个 / 批量完整订单 UUID，最多 100 条；当前浏览器历史记录；刷新及导出 |
 | 订单进度 | 前 30 秒每 3 秒查询，之后每 8 秒，3 分钟暂停；后台标签页暂停查询；`needs_attention` 停止自动查询 |
 | 后台工作台 | 本站订单统计、最近 100 笔订单、未知提交数、最小化操作审计 |
@@ -121,6 +121,14 @@ npm run build
 npm start
 ```
 
+服务统一使用 `/kmdh` 前缀，前台为 `https://sfkfaka.xyz/kmdh/`，订单查询为 `/kmdh/orders`，订阅查询为 `/kmdh/subscription`，帮助为 `/kmdh/help`，后台为 `/kmdh/limdh-admin`，API 为 `/kmdh/api/...`，静态资源为 `/kmdh/assets/...`。路径由 `app-path.mjs` 统一定义，修改后需要重新构建并重启。
+
+部署到此域名时，`.env` 应设置 `APP_ORIGIN=https://sfkfaka.xyz`，**不要在 APP_ORIGIN 后加 `/kmdh`**，浏览器 Origin 本身不含路径。只有一层可信代理时设置 `TRUST_PROXY=1`。
+
+Nginx 请将 [deploy/nginx-kmdh.conf](deploy/nginx-kmdh.conf) 中的 `location` 段加入现有 HTTPS `server` 段，检查 `nginx -t` 后重载。`proxy_pass http://127.0.0.1:3200;` 末尾不带 `/`，完整保留 `/kmdh` 路径。已有 `/kmdh` 规则应替换，避免重复匹配；Caddy 使用现有的 `reverse_proxy`，不要改成会剥离前缀的 `handle_path`。
+
+更新服务器代码后需要重新运行 `npm run build` 并重启 Node 服务；Docker 使用 `docker compose up -d --build`。同时更新前后端，避免旧前端仍然请求无前缀的 `/api` 地址。
+
 生产启动要求 `APP_ORIGIN` 使用 HTTPS；建议保持 Node 仅监听本机，代理转发到 3200。确保真实 IP 头只能由可信代理设置；只有一层可信代理时才设置 `TRUST_PROXY=1`。禁止将开发服务器直接暴露到公网。
 
 ## 验证
@@ -131,11 +139,11 @@ npm run build
 npm audit --omit=dev
 ```
 
-31 项测试使用独立临时数据库及内存模拟上游，覆盖订阅查询的有效/免费/未知状态、异常响应、限流及凭据不落库，以及系统代理配置、卡密预验证、凭证绑定和过期、权限、CSRF、去重、并发、超时恢复、待核验、批量查询、Session 校验等场景，**不会调用真实充值接口、产生真实订单或扣费**。真实联调需要正确的商户站点标识、API Key、有效 Session 和卡密 / 支付授权，尚未执行。
+32 项测试使用独立临时数据库及内存模拟上游，覆盖订阅查询的有效/免费/未知状态、异常响应、限流及凭据不落库，以及系统代理配置、卡密预验证、凭证绑定和过期、权限、CSRF、去重、并发、超时恢复、待核验、批量查询、Session 校验等场景，**不会调用真实充值接口、产生真实订单或扣费**。真实联调需要正确的商户站点标识、API Key、有效 Session 和卡密 / 支付授权，尚未执行。
 
 ### 订阅查询接口
 
-本站 `POST /api/subscription/query` 接收 `{ "session": "完整 Session JSON 字符串或 accessToken" }`。后端仅向固定的充值服务商地址 `https://admin-lm.zdhxylc.shop/api/v2/recharge/subscription-query` 转发 `chatgpt_token`；仅包含 accessToken 及可用的账号 ID、邮箱，不转发 sessionToken，不使用商户 API Key，不创建订单。该路径来自上游当前公开网页，未包含在项目的 v1 商户 API 文档中，若上游调整协议需要同步维护。
+本站 `POST /kmdh/api/subscription/query` 接收 `{ "session": "完整 Session JSON 字符串或 accessToken" }`。后端仅向固定的充值服务商地址 `https://admin-lm.zdhxylc.shop/api/v2/recharge/subscription-query` 转发 `chatgpt_token`；仅包含 accessToken 及可用的账号 ID、邮箱，不转发 sessionToken，不使用商户 API Key，不创建订单。该路径来自上游当前公开网页，未包含在项目的 v1 商户 API 文档中，若上游调整协议需要同步维护。
 
 查询每 IP 每分钟最多 10 次，同时受全站上游预算限制。仅返回订阅字段白名单；上游缺失必需状态字段、超时或异常响应会显示查询失败，不能当作“无订阅”。上游未返回的到期、续费等字段保持未知。前端查询成功后清空 Session 输入并展示结果，查询结果不持久化。
 

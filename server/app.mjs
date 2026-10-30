@@ -2,6 +2,7 @@ import express from 'express';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import cookieParser from 'cookie-parser';
+import { APP_BASE, appPath } from '../app-path.mjs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { security, verifyPassword } from './security.mjs';
 import { openStore } from './store.mjs';
@@ -30,16 +31,24 @@ export function createApp({ config, fetcher = fetch }) {
   const store = openStore(config, crypto);
   const { db } = store;
   const app = express();
+  const routes = express.Router();
   app.disable('x-powered-by');
   if (config.trustProxy) app.set('trust proxy', 1);
   app.use(helmet({ xFrameOptions: { action: 'deny' }, contentSecurityPolicy: { directives: {
     defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"], imgSrc: ["'self'", 'data:'], connectSrc: ["'self'"],
     fontSrc: ["'self'"], objectSrc: ["'none'"], frameAncestors: ["'none'"], baseUri: ["'self'"], formAction: ["'self'"], upgradeInsecureRequests: config.secure ? [] : null,
   } }, strictTransportSecurity: config.secure ? { maxAge: 31536000, includeSubDomains: true } : false, referrerPolicy: { policy: 'no-referrer' } }));
-  app.use('/api', (req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+  app.use((req, res, next) => {
+    if (['GET', 'HEAD'].includes(req.method) && ['/', APP_BASE].includes(req.path)) {
+      const query = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+      return res.redirect(308, `${appPath('/')}${query}`);
+    }
+    next();
+  });
+  app.use(appPath('/api'), (req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
   const limiter = (limit, windowMs = 60000) => rateLimit({ windowMs, limit, standardHeaders: 'draft-8', legacyHeaders: false,
     message: { error: { code: 'RATE_LIMIT', message: '操作过于频繁，请稍后再试。' } } });
-  app.use('/api', limiter(100));
+  app.use(appPath('/api'), limiter(100));
   app.use(express.json({ limit: '512kb', strict: true }));
   app.use(cookieParser());
   const cookieName = config.secure ? '__Host-limen_session' : 'limen_session';
@@ -52,7 +61,7 @@ export function createApp({ config, fetcher = fetch }) {
     res.cookie(cookieName, raw, cookieOptions);
     return { session, csrf: crypto.hash(`csrf:${raw}`) };
   }
-  app.use('/api', (req, res, next) => {
+  routes.use('/api', (req, res, next) => {
     const raw = req.cookies[cookieName];
     const session = typeof raw === 'string' && raw.length < 200 ? db.prepare('SELECT * FROM sessions WHERE id=? AND expires>?').get(crypto.hash(raw), Date.now()) : null;
     if (session) { req.session = session; req.csrf = crypto.hash(`csrf:${raw}`); }
@@ -67,22 +76,22 @@ export function createApp({ config, fetcher = fetch }) {
   const isAdmin = req => req.session.admin > Date.now() && req.session.password_tag === crypto.hash(config.passwordHash);
   const adminOnly = (req, res, next) => isAdmin(req) ? next() : next(fault(401, '请先登录管理后台', 'ADMIN_REQUIRED'));
   const publicSettings = () => { const { apiKey, verificationSite, ...settings } = store.settings(); return { ...settings, configured: !!apiKey, verificationConfigured: !!verificationSite }; };
-  app.get('/api/session', (req, res) => res.json({ csrfToken: req.csrf, admin: isAdmin(req), settings: publicSettings() }));
-  app.get('/api/health', (_req, res) => res.json({ ok: true }));
-  app.post('/api/admin/login', limiter(8, 15 * 60000), async (req, res) => {
+  routes.get('/api/session', (req, res) => res.json({ csrfToken: req.csrf, admin: isAdmin(req), settings: publicSettings() }));
+  routes.get('/api/health', (_req, res) => res.json({ ok: true }));
+  routes.post('/api/admin/login', limiter(8, 15 * 60000), async (req, res) => {
     if (!(await verifyPassword(req.body?.password, config.passwordHash))) { store.audit('login_failed'); throw fault(401, '管理员密码不正确', 'INVALID_LOGIN'); }
     const issued = issueSession(res, req.session.owner, Date.now() + 8 * 3600000);
     db.prepare('DELETE FROM sessions WHERE id=?').run(req.session.id);
     store.audit('login_success');
     res.json({ csrfToken: issued.csrf, admin: true });
   });
-  app.post('/api/admin/logout', adminOnly, (req, res) => {
+  routes.post('/api/admin/logout', adminOnly, (req, res) => {
     const issued = issueSession(res, req.session.owner);
     db.prepare('DELETE FROM sessions WHERE id=?').run(req.session.id);
     store.audit('logout'); res.json({ csrfToken: issued.csrf, admin: false });
   });
-  app.get('/api/admin/settings', adminOnly, (_req, res) => res.json({ ...publicSettings(), verificationSite: store.settings().verificationSite, apiBase: UPSTREAM }));
-  app.put('/api/admin/settings', adminOnly, (req, res) => {
+  routes.get('/api/admin/settings', adminOnly, (_req, res) => res.json({ ...publicSettings(), verificationSite: store.settings().verificationSite, apiBase: UPSTREAM }));
+  routes.put('/api/admin/settings', adminOnly, (req, res) => {
     const value = parse(settingsSchema, req.body);
     const { clearApiKey, apiKey, ...other } = value;
     const existing = store.settings();
@@ -127,7 +136,7 @@ export function createApp({ config, fetcher = fetch }) {
   function proofSignature(owner, site, cardKey, expires) {
     return crypto.hash(`card-verification:${owner}:${site}:${crypto.hash(cardKey)}:${expires}`);
   }
-  app.post('/api/subscription/query', limiter(10, 60000), async (req, res) => {
+  routes.post('/api/subscription/query', limiter(10, 60000), async (req, res) => {
     const input = parse(subscriptionSchema, req.body);
     const session = subscriptionInput(input.session);
     reserveUpstreamRequest();
@@ -153,7 +162,7 @@ export function createApp({ config, fetcher = fetch }) {
     if (time <= Date.now() || time > Date.now() + 30 * 60000) return false;
     return timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(proofSignature(owner, site, cardKey, expires), 'hex'));
   }
-  app.post('/api/card-keys/verify', limiter(60, 60000), async (req, res) => {
+  routes.post('/api/card-keys/verify', limiter(60, 60000), async (req, res) => {
     const { cardKey } = parse(verifyCardSchema, req.body);
     const settings = store.settings();
     if (settings.maintenance) throw fault(503, '兑换服务暂时维护中，请稍后再试', 'MAINTENANCE');
@@ -178,7 +187,7 @@ export function createApp({ config, fetcher = fetch }) {
     const expires = String(Date.now() + 30 * 60000);
     res.json({ verificationToken: `${expires}.${proofSignature(req.session.owner, settings.verificationSite, cardKey, expires)}`, expiresAt: Number(expires), planLabel: safeText(data.plan_label || data.plan) });
   });
-  app.post('/api/card-keys/recover', limiter(20, 60000), (req, res) => {
+  routes.post('/api/card-keys/recover', limiter(20, 60000), (req, res) => {
     const { cardKey, submissionKey } = parse(recoverCardSchema, req.body);
     const id = crypto.hash(`${req.session.owner}:${submissionKey}`);
     const row = db.prepare("SELECT card_hash FROM submissions WHERE id=? AND owner=? AND state='unknown'").get(id, req.session.owner);
@@ -186,7 +195,7 @@ export function createApp({ config, fetcher = fetch }) {
     res.json({ recoverable: true, message: '已找到原提交。请填写原来的 Session，系统只会尝试恢复相同内容。' });
   });
   function rememberOrder(data, owner) { const order = cleanOrder(data); store.saveOrder(order, owner); return order; }
-  app.post('/api/orders', limiter(60, 3600000), async (req, res) => {
+  routes.post('/api/orders', limiter(60, 3600000), async (req, res) => {
     const input = parse(createSchema, req.body);
     if (input.orderType === 'direct' && !isAdmin(req)) throw fault(403, '银行卡直充仅限管理员使用', 'ADMIN_REQUIRED');
     const settings = store.settings();
@@ -227,7 +236,7 @@ export function createApp({ config, fetcher = fetch }) {
       throw error;
     }
   });
-  app.post('/api/orders/query', async (req, res) => {
+  routes.post('/api/orders/query', async (req, res) => {
     const input = parse(querySchema, req.body);
     const ids = Array.isArray(input.order_no) ? input.order_no : [input.order_no];
     if (!isAdmin(req)) {
@@ -241,11 +250,11 @@ export function createApp({ config, fetcher = fetch }) {
     });
     res.json({ orders });
   });
-  app.get('/api/orders', (req, res) => {
+  routes.get('/api/orders', (req, res) => {
     const rows = db.prepare('SELECT payload FROM orders WHERE owner=? ORDER BY created DESC LIMIT 100').all(req.session.owner);
     res.json({ orders: rows.map(row => crypto.decrypt(row.payload)) });
   });
-  app.post('/api/admin/lookup', adminOnly, async (req, res) => {
+  routes.post('/api/admin/lookup', adminOnly, async (req, res) => {
     const input = parse(lookupSchema, req.body);
     const result = await upstream('/third-party/orders/lookup', input);
     if (!Array.isArray(result)) throw fault(502, '补查响应格式异常');
@@ -255,13 +264,13 @@ export function createApp({ config, fetcher = fetch }) {
     });
     store.audit('order_lookup'); res.json({ orders });
   });
-  app.get('/api/admin/overview', adminOnly, (_req, res) => {
+  routes.get('/api/admin/overview', adminOnly, (_req, res) => {
     const counts = db.prepare('SELECT status,COUNT(*) AS total FROM orders GROUP BY status').all();
     res.json({ counts, recentOrders: db.prepare('SELECT payload FROM orders ORDER BY created DESC LIMIT 100').all().map(row => crypto.decrypt(row.payload)),
       audit: db.prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 20').all(),
       unresolved: db.prepare("SELECT COUNT(*) AS total FROM submissions WHERE state='unknown'").get().total });
   });
-  app.use('/api', (_req, _res, next) => next(fault(404, '接口不存在')));
+  routes.use('/api', (_req, _res, next) => next(fault(404, '接口不存在')));
   // Recover interrupted process requests with their original upstream idempotency keys.
   db.prepare("UPDATE submissions SET state='unknown' WHERE state='submitting'").run();
   const cleanup = setInterval(() => db.prepare('DELETE FROM sessions WHERE expires<?').run(Date.now()), 3600000);
@@ -271,5 +280,6 @@ export function createApp({ config, fetcher = fetch }) {
     const message = status === 413 ? '提交内容过大，请减少批量数量' : error.type === 'entity.parse.failed' ? 'JSON 格式错误' : status >= 500 && !error.status ? '服务器暂时无法处理请求' : error.message;
     res.status(status).json({ error: { code: error.code || 'REQUEST_ERROR', message } });
   };
+  app.use(APP_BASE, routes);
   return { app, store, errorHandler, close() { clearInterval(cleanup); store.close(); } };
 }

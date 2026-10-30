@@ -4,12 +4,13 @@ import { createApp } from './app.mjs';
 import { loadConfig } from './security.mjs';
 import { mountProduction } from './static.mjs';
 import { configureOutboundProxy } from './outbound-proxy.mjs';
+import { appPath } from '../app-path.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const config = loadConfig();
 configureOutboundProxy();
 const runtime = createApp({ config });
 const { app } = runtime;
-app.get(['/admin', '/admin/{*path}'], (_req, res) => res.status(404).type('text').send('Not Found'));
+app.get(['/admin', '/admin/{*path}', appPath('/admin'), appPath('/admin/{*path}')], (_req, res) => res.status(404).type('text').send('Not Found'));
 if (config.production) {
   mountProduction(app, path.join(root, 'dist'));
 } else {
@@ -24,6 +25,6 @@ if (config.production) {
 app.use(runtime.errorHandler);
 const port = Number(process.env.PORT || 3200);
 const host = process.env.HOST || '127.0.0.1';
-const server = app.listen(port, host, () => console.log(`LIMEN running at ${config.origin}${config.production ? '' : ' (development)'}`));
+const server = app.listen(port, host, () => console.log(`LIMEN running at ${config.origin}${appPath('/')}${config.production ? '' : ' (development)'}`));
 const stop = () => server.close(() => { runtime.close(); process.exit(0); });
 process.on('SIGINT', stop); process.on('SIGTERM', stop);
