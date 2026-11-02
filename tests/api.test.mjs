@@ -131,6 +131,69 @@ test('批量查询最多 100 条，保留重复顺序并使用 order_no',async t
   await c.send('post','/kmdh/api/orders/query',{order_no:Array(101).fill(id)}).expect(422);
   await c.send('post','/kmdh/api/orders/query',{cardKey:'WRONG-FIELD'}).expect(422);
 });
+
+test('CDK 查询通过既有摘要关联订单，按订单号刷新且不返回或保存明文卡密',async t=>{
+  const f=await fixture(t);const c=await f.client();const p=payload();
+  const created=await c.send('post','/kmdh/api/orders',p,{'Idempotency-Key':randomUUID()}).expect(201);
+  const id=created.body.order.order_no;f.orders.set(id,{...f.orders.get(id),status:'success'});
+  const r=await c.send('post','/kmdh/api/orders/query-by-card',{cardKey:`  ${p.cardKey}  `}).expect(200);
+  assert.equal(r.body.orders[0].order_no,id);assert.equal(r.body.orders[0].status,'success');
+  assert.deepEqual(r.body.notFound,[]);assert.deepEqual(r.body.unresolved,[]);
+  assert.deepEqual(f.calls.at(-1).body,{order_no:[id]});assert.equal(f.calls.at(-1).url,`${UPSTREAM}/third-party/orders/query`);
+  assert.equal(JSON.stringify(r.body).includes(p.cardKey),false);
+  for(const name of readdirSync(f.config.dataDir))assert.equal(readFileSync(path.join(f.config.dataDir,name)).includes(Buffer.from(p.cardKey)),false);
+});
+
+test('CDK 查询保持浏览器隔离，混合批量只查询自己的订单',async t=>{
+  const f=await fixture(t);const c=await f.client();const other=await f.client();const own=payload();const foreign=payload();
+  const first=await c.send('post','/kmdh/api/orders',own,{'Idempotency-Key':randomUUID()}).expect(201);
+  await other.send('post','/kmdh/api/orders',foreign,{'Idempotency-Key':randomUUID()}).expect(201);
+  const before=f.calls.length;
+  const denied=await c.send('post','/kmdh/api/orders/query-by-card',{cardKey:foreign.cardKey}).expect(200);
+  assert.deepEqual(denied.body,{orders:[],notFound:[1],unresolved:[]});assert.equal(f.calls.length,before);
+  const result=await c.send('post','/kmdh/api/orders/query-by-card',{cardKey:[own.cardKey,foreign.cardKey,'MISSING-CARD']}).expect(200);
+  assert.deepEqual(result.body.notFound,[2,3]);assert.equal(result.body.orders.length,1);
+  assert.deepEqual(f.calls.at(-1).body,{order_no:[first.body.order.order_no]});
+});
+
+test('结果未确认的 CDK 查询返回核实提示，保留锁且不创建或重试订单',async t=>{
+  const f=await fixture(t,()=>{throw new Error('simulated timeout');});const c=await f.client();const p=payload();
+  await c.send('post','/kmdh/api/orders',p,{'Idempotency-Key':randomUUID()}).expect(504);
+  const before=f.calls.length;
+  const r=await c.send('post','/kmdh/api/orders/query-by-card',{cardKey:p.cardKey}).expect(200);
+  assert.deepEqual(r.body,{orders:[],notFound:[],unresolved:[1]});assert.equal(f.calls.length,before);
+  assert.equal(f.store.db.prepare("SELECT COUNT(*) AS n FROM submissions WHERE state='unknown'").get().n,1);
+  await c.send('post','/kmdh/api/orders',p,{'Idempotency-Key':randomUUID()}).expect(409);
+});
+
+test('同一 CDK 有失败和后续订单时返回各自原订单，不静默切换或重复查询',async t=>{
+  const f=await fixture(t);const c=await f.client();const p=payload();
+  const first=await c.send('post','/kmdh/api/orders',p,{'Idempotency-Key':randomUUID()}).expect(201);
+  const id=first.body.order.order_no;f.orders.set(id,{...f.orders.get(id),status:'failed'});
+  await c.send('post','/kmdh/api/orders/query',{order_no:id}).expect(200);
+  const second=await c.send('post','/kmdh/api/orders',p,{'Idempotency-Key':randomUUID()}).expect(201);
+  const r=await c.send('post','/kmdh/api/orders/query-by-card',{cardKey:[p.cardKey,p.cardKey]}).expect(200);
+  assert.equal(r.body.orders.length,2);assert.equal(f.calls.at(-1).body.order_no.length,2);
+  assert.deepEqual(new Set(r.body.orders.map(o=>o.order_no)),new Set([id,second.body.order.order_no]));
+});
+
+test('CDK 查询校验批量上限、空白及来源，超过订单上限时不转发',async t=>{
+  const f=await fixture(t);const c=await f.client();
+  for(const body of [{cardKey:[]},{cardKey:Array(51).fill('TEST')},{cardKey:' '},{cardKey:'X'.repeat(129)},{cardKey:'TEST',order_no:randomUUID()}]){
+    await c.send('post','/kmdh/api/orders/query-by-card',body).expect(422);
+  }
+  await c.agent.post('/kmdh/api/orders/query-by-card').send({cardKey:'TEST'}).expect(403);
+  await c.send('post','/kmdh/api/orders/query-by-card',{cardKey:'TEST'},{Origin:'https://evil.example'}).expect(403);
+  const crypto=security(f.config);const p=payload();const created=await c.send('post','/kmdh/api/orders',p,{'Idempotency-Key':randomUUID()}).expect(201);
+  const row=f.store.db.prepare('SELECT owner FROM orders WHERE order_no=?').get(created.body.order.order_no);
+  for(let i=0;i<100;i++){
+    const id=randomUUID();f.store.saveOrder({order_no:id,status:'failed'},row.owner);
+    f.store.db.prepare('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?)').run(randomUUID(),row.owner,'test-digest',crypto.hash(p.cardKey),'test-account','failed',id,Date.now()+i);
+  }
+  const before=f.calls.length;
+  const r=await c.send('post','/kmdh/api/orders/query-by-card',{cardKey:p.cardKey}).expect(422);
+  assert.equal(r.body.error.code,'TOO_MANY_ORDERS');assert.equal(f.calls.length,before);
+});
 test('待核验与支付确认单独保存，并拦截重复充值',async t=>{
   const f=await fixture(t);const c=await f.client();const p=payload();
   const created=await c.send('post','/kmdh/api/orders',p,{'Idempotency-Key':randomUUID()}).expect(201);const id=created.body.order.order_no;

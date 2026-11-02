@@ -7,7 +7,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { security, verifyPassword } from './security.mjs';
 import { openStore } from './store.mjs';
 import { subscriptionSchema, subscriptionInput, cleanSubscription, SUBSCRIPTION_URL } from './subscription.mjs';
-import { createSchema, querySchema, lookupSchema, verifyCardSchema, recoverCardSchema, settingsSchema, parse } from './validation.mjs';
+import { createSchema, querySchema, queryCardSchema, lookupSchema, verifyCardSchema, recoverCardSchema, settingsSchema, parse } from './validation.mjs';
 
 export const UPSTREAM = 'https://admin-lm.zdhxylc.shop/api/v1';
 const active = ['submitting', 'unknown', 'pending', 'processing', 'pending_verification'];
@@ -236,19 +236,40 @@ export function createApp({ config, fetcher = fetch }) {
       throw error;
     }
   });
+  async function refreshOrders(input, owner) {
+    const ids = Array.isArray(input.order_no) ? input.order_no : [input.order_no];
+    const result = await upstream('/third-party/orders/query', input);
+    const rows = Array.isArray(result) ? result : result ? [result] : [];
+    return rows.filter(row => ids.includes(row.order_no)).map(data => {
+      const current = db.prepare('SELECT owner FROM orders WHERE order_no=?').get(data.order_no);
+      return rememberOrder(data, current?.owner || owner);
+    });
+  }
   routes.post('/api/orders/query', async (req, res) => {
     const input = parse(querySchema, req.body);
     const ids = Array.isArray(input.order_no) ? input.order_no : [input.order_no];
     if (!isAdmin(req)) {
       for (const id of ids) if (!db.prepare('SELECT order_no FROM orders WHERE order_no=? AND owner=?').get(id, req.session.owner)) throw fault(404, '未找到当前浏览器的订单，请核对订单号，跨设备查询请联系商家', 'ORDER_NOT_FOUND');
     }
-    const result = await upstream('/third-party/orders/query', input);
-    const rows = Array.isArray(result) ? result : result ? [result] : [];
-    const orders = rows.filter(row => ids.includes(row.order_no)).map(data => {
-      const current = db.prepare('SELECT owner FROM orders WHERE order_no=?').get(data.order_no);
-      return rememberOrder(data, current?.owner || req.session.owner);
-    });
+    const orders = await refreshOrders(input, req.session.owner);
     res.json({ orders });
+  });
+  routes.post('/api/orders/query-by-card', limiter(30, 60000), async (req, res) => {
+    const input = parse(queryCardSchema, req.body);
+    const cards = Array.isArray(input.cardKey) ? input.cardKey : [input.cardKey];
+    const find = db.prepare(`SELECT s.state, o.order_no FROM submissions s
+      LEFT JOIN orders o ON o.order_no=s.order_no AND o.owner=s.owner
+      WHERE s.card_hash=? AND s.owner=? ORDER BY s.created DESC`);
+    const ids = new Set(); const notFound = []; const unresolved = [];
+    cards.forEach((card, index) => {
+      const rows = find.all(crypto.hash(card), req.session.owner);
+      if (!rows.length) notFound.push(index + 1);
+      for (const row of rows) if (row.order_no) ids.add(row.order_no);
+      if (rows.some(row => !row.order_no && ['submitting', 'unknown'].includes(row.state))) unresolved.push(index + 1);
+    });
+    if (ids.size > 100) throw fault(422, '匹配订单超过 100 笔，请减少本次查询的 CDK 数量。', 'TOO_MANY_ORDERS');
+    const orders = ids.size ? await refreshOrders({ order_no: [...ids] }, req.session.owner) : [];
+    res.json({ orders, notFound, unresolved });
   });
   routes.get('/api/orders', (req, res) => {
     const rows = db.prepare('SELECT payload FROM orders WHERE owner=? ORDER BY created DESC LIMIT 100').all(req.session.owner);

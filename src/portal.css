@@ -80,8 +80,13 @@ body { background: #f6f9fd; }
 .portal-shell .empty-state h3 { font-size: 17px; color: #344055; }
 .portal-shell .empty-icon { color: #5579c2; background: #eaf1ff; }
 .portal-shell .query-card form > .primary { width: 100%; margin-top: 16px; }
+.portal-shell .query-card form { padding: 0; }
+.portal-shell .query-card .input-label span { font-size: 13px; color: #526176; }
 .portal-shell .query-card textarea { min-height: 110px; }
 .portal-shell .query-card .input-label { margin-top: 0; }
+.query-modes { display: flex; gap: 4px; padding: 4px; margin-bottom: 16px; border: 1px solid #e0e6ef; border-radius: 8px; background: #f0f3f8; width: fit-content; max-width: 100%; }
+.query-modes button { padding: 7px 18px; font-size: 14px; font-weight: 600; background: transparent; color: #495568; border-radius: 5px; }
+.query-modes button.selected { background: #fff; color: #2454d9; box-shadow: 0 1px 5px #253d5910; }
 .provider-tabs { display: flex; padding: 4px; background: #f0f3f8; border-radius: 8px; width: fit-content; margin: 0 auto 20px; }
 .provider-tabs .selected { background: #e3f5f6; color: #2454d9; border: 1px solid #c2deea; border-radius: 6px; font-size: 14px; font-weight: 650; padding: 7px 34px; }
 .subscription-form .field-heading { margin-bottom: 9px; }
@@ -132,6 +137,8 @@ body { background: #f6f9fd; }
   .verified-summary { padding: 6px 10px; margin-bottom: 10px; }
   .portal-shell .session-field textarea { height: 65px; min-height: 65px; }
   .portal-shell .batch-section textarea { height: 94px; min-height: 94px; }
+  .portal-shell .query-card + .empty-state { padding-top: 16px; padding-bottom: 16px; }
+  .portal-shell .query-card + .empty-state .empty-icon { display: none; }
   .portal-shell .confirmation { margin-top: 10px; padding-top: 8px; }
   .portal-shell .confirmation > p { margin-top: 2px; }
   .portal-shell .submit-button { margin-top: 10px; }
