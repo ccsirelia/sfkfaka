@@ -7,7 +7,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { security, verifyPassword } from './security.mjs';
 import { openStore } from './store.mjs';
 import { subscriptionSchema, subscriptionInput, cleanSubscription, SUBSCRIPTION_URL } from './subscription.mjs';
-import { createSchema, querySchema, queryCardSchema, lookupSchema, verifyCardSchema, recoverCardSchema, settingsSchema, parse } from './validation.mjs';
+import { createSchema, querySchema, queryCardSchema, uuid, lookupSchema, verifyCardSchema, recoverCardSchema, settingsSchema, parse } from './validation.mjs';
 
 export const UPSTREAM = 'https://admin-lm.zdhxylc.shop/api/v1';
 const active = ['submitting', 'unknown', 'pending', 'processing', 'pending_verification'];
@@ -237,19 +237,31 @@ export function createApp({ config, fetcher = fetch }) {
     }
   });
   async function refreshOrders(input, owner) {
-    const ids = Array.isArray(input.order_no) ? input.order_no : [input.order_no];
-    const result = await upstream('/third-party/orders/query', input);
+    const ids = (Array.isArray(input.order_no) ? input.order_no : [input.order_no]).map(id => id.toLowerCase());
+    let result;
+    try { result = await upstream('/third-party/orders/query', { order_no: Array.isArray(input.order_no) ? ids : ids[0] }); }
+    catch (error) { if (error.code === 'UPSTREAM_40403') return []; throw error; }
     const rows = Array.isArray(result) ? result : result ? [result] : [];
-    return rows.filter(row => ids.includes(row.order_no)).map(data => {
-      const current = db.prepare('SELECT owner FROM orders WHERE order_no=?').get(data.order_no);
-      return rememberOrder(data, current?.owner || owner);
+    return rows.filter(row => typeof row?.order_no === 'string' && ids.includes(row.order_no.toLowerCase())).map(data => {
+      const orderNo = data.order_no.toLowerCase();
+      const current = db.prepare('SELECT owner FROM orders WHERE order_no=?').get(orderNo);
+      return rememberOrder({ ...data, order_no: orderNo }, current?.owner || owner);
     });
   }
   routes.post('/api/orders/query', async (req, res) => {
     const input = parse(querySchema, req.body);
     // A complete order UUID can be queried across devices; the provider's API Key determines merchant access.
-    const orders = await refreshOrders(input, req.session.owner);
-    res.json({ orders });
+    const ids = Array.isArray(input.order_no) ? input.order_no : [input.order_no];
+    const valid = ids.filter(id => uuid.safeParse(id).success).map(id => id.toLowerCase());
+    const orders = valid.length ? await refreshOrders({ order_no: Array.isArray(input.order_no) ? valid : valid[0] }, req.session.owner) : [];
+    const found = new Set(orders.map(order => order.order_no));
+    const items = ids.map((id, index) => {
+      if (!uuid.safeParse(id).success) return { index: index + 1, state: 'invalid', order_nos: [], message: '订单号格式无效，请填写完整订单 UUID。' };
+      const orderNo = id.toLowerCase();
+      return { index: index + 1, state: found.has(orderNo) ? 'found' : 'not_found', order_nos: [orderNo],
+        ...(found.has(orderNo) ? {} : { message: '上游未返回此订单：可能不存在、尚未创建或不属于当前商户，无法据此确认是否已兑换。' }) };
+    });
+    res.json({ orders, items });
   });
   routes.post('/api/orders/query-by-card', limiter(30, 60000), async (req, res) => {
     const input = parse(queryCardSchema, req.body);
@@ -258,15 +270,26 @@ export function createApp({ config, fetcher = fetch }) {
       LEFT JOIN orders o ON o.order_no=s.order_no AND o.owner=s.owner
       WHERE s.card_hash=? ORDER BY s.created DESC`);
     const ids = new Set(); const notFound = []; const unresolved = [];
-    cards.forEach((card, index) => {
+    const matches = cards.map((card, index) => {
       const rows = find.all(crypto.hash(card));
       if (!rows.length) notFound.push(index + 1);
       for (const row of rows) if (row.order_no) ids.add(row.order_no);
-      if (rows.some(row => !row.order_no && ['submitting', 'unknown'].includes(row.state))) unresolved.push(index + 1);
+      const unknown = rows.some(row => !row.order_no && ['submitting', 'unknown'].includes(row.state));
+      if (unknown) unresolved.push(index + 1);
+      return { index: index + 1, order_nos: [...new Set(rows.map(row => row.order_no).filter(Boolean))], unresolved: unknown };
     });
     if (ids.size > 100) throw fault(422, '匹配订单超过 100 笔，请减少本次查询的 CDK 数量。', 'TOO_MANY_ORDERS');
     const orders = ids.size ? await refreshOrders({ order_no: [...ids] }, req.session.owner) : [];
-    res.json({ orders, notFound, unresolved });
+    const found = new Set(orders.map(order => order.order_no));
+    const items = matches.map(match => {
+      const hasOrder = match.order_nos.some(id => found.has(id));
+      const state = hasOrder ? 'found' : match.unresolved ? 'unresolved' : 'not_found';
+      const message = match.unresolved ? '存在正在提交或结果未确认的记录，请联系商家核实，切勿重复充值。'
+        : !match.order_nos.length ? '无本站关联记录：可能尚未兑换或未通过本站提交，不能据此认定卡密未使用。'
+        : match.order_nos.some(id => !found.has(id)) ? '部分关联订单未被上游返回，可能不存在或不属于当前商户，请联系商家核实。' : '';
+      return { ...match, state, ...(message ? { message } : {}) };
+    });
+    res.json({ orders, notFound, unresolved, items });
   });
   routes.get('/api/orders', (req, res) => {
     const rows = db.prepare('SELECT payload FROM orders WHERE owner=? ORDER BY created DESC LIMIT 100').all(req.session.owner);

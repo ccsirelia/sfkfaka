@@ -7,7 +7,7 @@ import { randomBytes, randomUUID, scryptSync } from 'node:crypto';
 import request from 'supertest';
 import { createApp, UPSTREAM } from '../server/app.mjs';
 import { loadConfig, security } from '../server/security.mjs';
-import { parseCardList, parseBatchSessions } from '../src/api.js';
+import { parseCardList, parseBatchSessions, parseQueryList } from '../src/api.js';
 import { mountProduction } from '../server/static.mjs';
 import { selectWindowsProxy } from '../server/outbound-proxy.mjs';
 import express from 'express';
@@ -166,6 +166,58 @@ test('批量查询最多 100 条，保留重复顺序并使用 order_no',async t
   await c.send('post','/kmdh/api/orders/query',{cardKey:'WRONG-FIELD'}).expect(422);
 });
 
+test('批量查询解析换行、中文逗号、引号及 JSON，保留输入次序和重复项',()=>{
+  const a=randomUUID();const b=randomUUID();
+  assert.deepEqual(parseQueryList(`"${a}"，\r\n'${b}'; ${a}`),[a,b,a]);
+  assert.deepEqual(parseQueryList(JSON.stringify([a,'bad-order',b,a])),[a,'bad-order',b,a]);
+  assert.deepEqual(parseQueryList('CDK-A,CDK-B\nCDK-A','card'),['CDK-A','CDK-B','CDK-A']);
+  assert.throws(()=>parseQueryList(JSON.stringify([a,1])),/字符串/);
+  assert.throws(()=>parseQueryList('['),/JSON/);
+  assert.throws(()=>parseQueryList(Array(101).fill(a).join('\n')),/100/);
+  assert.throws(()=>parseQueryList(Array(51).fill('CARD').join('\n'),'card'),/50/);
+});
+
+test('批量订单逐项展示有效、未完成、待核验、失败、未匹配及无效项，大小写不影响匹配',async t=>{
+  const f=await fixture(t);const c=await f.client();const states=['success','pending','processing','pending_verification','failed'];
+  const ids=states.map(status=>{const id=randomUUID();f.orders.set(id,{order_no:id,status});return id;});const missing=randomUUID();
+  const inputs=[ids[0].toUpperCase(),missing,'bad-order',...ids.slice(1),ids[0]];
+  const r=await c.send('post','/kmdh/api/orders/query',{order_no:inputs}).expect(200);
+  assert.equal(r.body.items.length,inputs.length);
+  assert.deepEqual(r.body.items.map(item=>item.index),inputs.map((_,i)=>i+1));
+  assert.deepEqual(r.body.items.map(item=>item.state),['found','not_found','invalid','found','found','found','found','found']);
+  assert.deepEqual(r.body.orders.map(order=>order.status),[...states,'success']);
+  assert.ok(!f.calls.at(-1).body.order_no.includes('bad-order'));
+  assert.deepEqual(r.body.items[0].order_nos,[ids[0]]);
+  assert.match(r.body.items[1].message,/不属于当前商户/);
+  assert.equal(f.store.db.prepare('SELECT order_no FROM orders WHERE order_no=?').get(missing),undefined);
+});
+
+test('上游 40403 为每个订单生成未匹配结果，认证失败不能当作未兑换',async t=>{
+  let code=40403;
+  const f=await fixture(t,()=>Response.json({code,data:null},{status:code===40403?404:401}));const c=await f.client();const ids=[randomUUID(),randomUUID()];
+  const r=await c.send('post','/kmdh/api/orders/query',{order_no:ids}).expect(200);
+  assert.deepEqual(r.body.orders,[]);assert.equal(r.body.items.length,2);
+  assert.ok(r.body.items.every(item=>item.state==='not_found'));
+  code=40107;const failure=await c.send('post','/kmdh/api/orders/query',{order_no:ids}).expect(401);
+  assert.equal(failure.body.error.code,'UPSTREAM_40107');assert.equal(failure.body.items,undefined);
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM orders').get().n,0);
+});
+
+test('CDK 批量为每个输入保留对应结果，未关联及未确认记录不被遗漏',async t=>{
+  const f=await fixture(t);const c=await f.client();const p=payload();
+  const created=await c.send('post','/kmdh/api/orders',p,{'Idempotency-Key':randomUUID()}).expect(201);
+  const id=created.body.order.order_no;const owner=f.store.db.prepare('SELECT owner FROM orders WHERE order_no=?').get(id).owner;
+  const unknown='UNKNOWN-CARD-FOR-BATCH';const absent='UNUSED-OR-NON-SITE-CARD';
+  f.store.db.prepare('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?)').run(randomUUID(),owner,'digest',security(f.config).hash(unknown),'unknown-account','unknown',null,Date.now());
+  const r=await c.send('post','/kmdh/api/orders/query-by-card',{cardKey:[p.cardKey,unknown,absent,p.cardKey]}).expect(200);
+  assert.deepEqual(r.body.items.map(item=>item.state),['found','unresolved','not_found','found']);
+  assert.deepEqual(r.body.items.map(item=>item.index),[1,2,3,4]);
+  assert.deepEqual(r.body.unresolved,[2]);assert.deepEqual(r.body.notFound,[3]);
+  assert.deepEqual(r.body.items[0].order_nos,[id]);assert.deepEqual(r.body.items[3].order_nos,[id]);
+  for(const card of [p.cardKey,unknown,absent])assert.equal(JSON.stringify(r.body).includes(card),false);
+  assert.equal(f.store.db.prepare("SELECT COUNT(*) AS n FROM submissions WHERE state='unknown'").get().n,1);
+});
+
 test('CDK 查询通过既有摘要关联订单，按订单号刷新且不返回或保存明文卡密',async t=>{
   const f=await fixture(t);const c=await f.client();const p=payload();
   const created=await c.send('post','/kmdh/api/orders',p,{'Idempotency-Key':randomUUID()}).expect(201);
@@ -194,7 +246,8 @@ test('完整 CDK 可跨浏览器查询及批量匹配，查询不转移订单归
   assert.deepEqual((await other.agent.get('/kmdh/api/orders').expect(200)).body.orders.map(o=>o.order_no),[second.body.order.order_no]);
   const before=f.calls.length;
   const partial=await viewer.send('post','/kmdh/api/orders/query-by-card',{cardKey:foreign.cardKey.slice(0,-1)}).expect(200);
-  assert.deepEqual(partial.body,{orders:[],notFound:[1],unresolved:[]});assert.equal(f.calls.length,before);
+  assert.deepEqual(partial.body.orders,[]);assert.deepEqual(partial.body.notFound,[1]);assert.deepEqual(partial.body.unresolved,[]);
+  assert.equal(partial.body.items[0].state,'not_found');assert.equal(f.calls.length,before);
 });
 
 test('结果未确认的 CDK 查询返回核实提示，保留锁且不创建或重试订单',async t=>{
@@ -202,7 +255,8 @@ test('结果未确认的 CDK 查询返回核实提示，保留锁且不创建或
   await c.send('post','/kmdh/api/orders',p,{'Idempotency-Key':key}).expect(504);
   const before=f.calls.length;
   const r=await other.send('post','/kmdh/api/orders/query-by-card',{cardKey:p.cardKey}).expect(200);
-  assert.deepEqual(r.body,{orders:[],notFound:[],unresolved:[1]});assert.equal(f.calls.length,before);
+  assert.deepEqual(r.body.orders,[]);assert.deepEqual(r.body.notFound,[]);assert.deepEqual(r.body.unresolved,[1]);
+  assert.equal(r.body.items[0].state,'unresolved');assert.equal(f.calls.length,before);
   assert.equal(f.store.db.prepare("SELECT COUNT(*) AS n FROM submissions WHERE state='unknown'").get().n,1);
   await other.send('post','/kmdh/api/card-keys/recover',{cardKey:p.cardKey,submissionKey:key}).expect(404);
   await c.send('post','/kmdh/api/orders',p,{'Idempotency-Key':randomUUID()}).expect(409);

@@ -22,7 +22,8 @@ const direct = z.object({ orderType: z.literal('direct'), token, country: z.stri
   }, '银行卡已过期');
 export const createSchema = z.discriminatedUnion('orderType', [cdk, direct]);
 export const uuid = z.uuid();
-export const querySchema = z.object({ order_no: z.union([uuid, z.array(uuid).min(1).max(100)]) }).strict();
+// Validate batch entries individually so one malformed UUID does not hide the other results.
+export const querySchema = z.object({ order_no: z.union([uuid, z.array(z.string().trim().max(128)).min(1).max(100)]) }).strict();
 const queryCard = z.string().trim().min(1).max(128);
 export const queryCardSchema = z.object({ cardKey: z.union([queryCard, z.array(queryCard).min(1).max(50)]) }).strict();
 export const lookupSchema = z.object({ cardNumber: z.string().regex(/^\d{12,19}$/), email: z.email().max(255) }).strict();

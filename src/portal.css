@@ -87,6 +87,15 @@ body { background: #f6f9fd; }
 .query-modes { display: flex; gap: 4px; padding: 4px; margin-bottom: 16px; border: 1px solid #e0e6ef; border-radius: 8px; background: #f0f3f8; width: fit-content; max-width: 100%; }
 .query-modes button { padding: 7px 18px; font-size: 14px; font-weight: 600; background: transparent; color: #495568; border-radius: 5px; }
 .query-modes button.selected { background: #fff; color: #2454d9; box-shadow: 0 1px 5px #253d5910; }
+.query-input-block { padding: 15px 0; border-top: 1px solid #e0e6ef; }
+.query-input-block:first-of-type { margin-top: 12px; }
+.query-input-heading { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.query-input-heading code, .query-missing-row code { overflow-wrap: anywhere; font-size: 13px; color: #344055; }
+.query-input-heading code { flex: 1; min-width: 0; }
+.query-index { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 6px; background: #edf2fc; color: #3a5ca0; font-size: 12px; flex-shrink: 0; }
+.query-item-message { margin-top: 8px; color: #526176; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.query-missing-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 9px; }
+.query-input-block .order-item { margin-top: 10px; }
 .provider-tabs { display: flex; padding: 4px; background: #f0f3f8; border-radius: 8px; width: fit-content; margin: 0 auto 20px; }
 .provider-tabs .selected { background: #e3f5f6; color: #2454d9; border: 1px solid #c2deea; border-radius: 6px; font-size: 14px; font-weight: 650; padding: 7px 34px; }
 .subscription-form .field-heading { margin-bottom: 9px; }

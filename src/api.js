@@ -37,6 +37,18 @@ export function parseSession(raw) {
   } catch { throw new Error('accessToken 无效或已过期，请重新获取 Session。'); }
   return token;
 }
+export function parseQueryList(raw, mode = 'order') {
+  const text = raw.trim(); let values;
+  if (text.startsWith('[')) {
+    try { values = JSON.parse(text); } catch { throw new Error('查询 JSON 数组格式不正确，请填写字符串数组。'); }
+    if (!Array.isArray(values) || values.some(value => typeof value !== 'string')) throw new Error('查询 JSON 数组中的每一项都必须是字符串。');
+  } else values = text.split(mode === 'card' ? /[\r\n,;，；]+/ : /[\s,;，；]+/);
+  values = values.map(value => value.trim().replace(/^(["'])(.*)\1$/, '$2').trim()).filter(Boolean);
+  const limit = mode === 'card' ? 50 : 100;
+  if (!values.length || values.length > limit) throw new Error(`请输入 1–${limit} ${mode === 'card' ? '张 CDK' : '个订单号'}，支持换行、逗号或 JSON 数组。`);
+  if (values.some(value => value.length > 128)) throw new Error('每项查询内容最多 128 个字符。');
+  return values;
+}
 export function parseCardList(raw) {
   const cards = raw.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   if (!cards.length || cards.length > 50) throw new Error('请输入 1–50 张卡密，每行一张。');
