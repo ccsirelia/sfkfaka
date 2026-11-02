@@ -256,23 +256,57 @@ export function createApp({ config, fetcher = fetch }) {
     const orders = valid.length ? await refreshOrders({ order_no: Array.isArray(input.order_no) ? valid : valid[0] }, req.session.owner) : [];
     const found = new Set(orders.map(order => order.order_no));
     const items = ids.map((id, index) => {
-      if (!uuid.safeParse(id).success) return { index: index + 1, state: 'invalid', order_nos: [], message: '订单号格式无效，请填写完整订单 UUID。' };
+      if (!uuid.safeParse(id).success) return { index: index + 1, state: 'invalid', order_nos: [], message: /^TASK-/i.test(id) ? '这是任务号，不是上游商户 API 的订单 UUID；请使用原平台的订单号，或通过该平台查询任务。' : '订单号格式无效，请填写完整订单 UUID。' };
       const orderNo = id.toLowerCase();
       return { index: index + 1, state: found.has(orderNo) ? 'found' : 'not_found', order_nos: [orderNo],
         ...(found.has(orderNo) ? {} : { message: '上游未返回此订单：可能不存在、尚未创建或不属于当前商户，无法据此确认是否已兑换。' }) };
     });
     res.json({ orders, items });
   });
+  async function querySiteCard(cardKey, site) {
+    if (!site) return { state: 'error', message: '尚未配置上游兑换站，无法核实卡密状态。' };
+    async function requestSite(action) {
+      reserveUpstreamRequest();
+      const response = await fetcher(`https://admin-lm.zdhxylc.shop/api/v2/sites/${encodeURIComponent(site)}/${action}`, {
+        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15000),
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ redeem_code: cardKey }),
+      });
+      return { response, data: await response.json() };
+    }
+    try {
+      const lookup = await requestSite('lookup');
+      if ([400,409].includes(lookup.response.status) && lookup.data?.detail === '卡密无效或不属于本站，请检查输入或联系商家') {
+        return { state: 'invalid_or_foreign', message: '卡密无效或不属于当前上游兑换站，上游未区分具体原因。' };
+      }
+      if (!lookup.response.ok || !lookup.data || !Object.hasOwn(lookup.data, 'job')) throw new Error('lookup unavailable');
+      const job = lookup.data.job;
+      if (job !== null) {
+        const allowed = ['succeeded','failed','cancelled','pending','processing','queued','running','manual_review','pending_verification'];
+        if (!job || typeof job !== 'object' || typeof job.status !== 'string' || !/^[a-z_]{1,40}$/.test(job.status) || typeof job.job_id !== 'string' || !/^[A-Za-z\d_-]{1,128}$/.test(job.job_id) || job.job_id.includes(cardKey)) throw new Error('malformed job');
+        const clean = value => { const text = safeText(value); return text ? text.split(cardKey).join('[已隐藏卡密]') : null; };
+        const status = job.subscription_verification_state === 'needs_attention' ? 'manual_review' : allowed.includes(job.status) ? job.status : 'unknown';
+        return { state: 'site_order', site_order: { job_id: job.job_id, status, email: clean(job.account_email),
+          plan: clean(job.plan_label || job.plan), created_at: clean(job.created_at), finished_at: clean(job.finished_at),
+          verification_reason: clean(job.subscription_verification_reason), failure_reason: clean(job.failure_reason) } };
+      }
+      const preview = await requestSite('preview');
+      if ([400,409].includes(preview.response.status)) return { state: 'unavailable', message: '上游未发现兑换站任务，但卡密当前不可用；请联系商家核实。' };
+      const plan = preview.data?.plan_label || preview.data?.plan;
+      if (!preview.response.ok || typeof plan !== 'string' || !plan.trim()) throw new Error('preview unavailable');
+      return { state: 'unused', plan_label: safeText(plan)?.split(cardKey).join('[已隐藏卡密]'), message: '上游验证通过，当前兑换站未查到提交记录，卡密目前可使用。' };
+    } catch (error) {
+      return { state: 'error', message: error.code === 'UPSTREAM_BUDGET' ? '查询较多，请稍后重试该卡密。' : '上游暂时无法核实卡密状态，请稍后重试。' };
+    }
+  }
   routes.post('/api/orders/query-by-card', limiter(30, 60000), async (req, res) => {
     const input = parse(queryCardSchema, req.body);
     const cards = Array.isArray(input.cardKey) ? input.cardKey : [input.cardKey];
     const find = db.prepare(`SELECT s.state, o.order_no FROM submissions s
       LEFT JOIN orders o ON o.order_no=s.order_no AND o.owner=s.owner
       WHERE s.card_hash=? ORDER BY s.created DESC`);
-    const ids = new Set(); const notFound = []; const unresolved = [];
+    const ids = new Set(); const unresolved = [];
     const matches = cards.map((card, index) => {
       const rows = find.all(crypto.hash(card));
-      if (!rows.length) notFound.push(index + 1);
       for (const row of rows) if (row.order_no) ids.add(row.order_no);
       const unknown = rows.some(row => !row.order_no && ['submitting', 'unknown'].includes(row.state));
       if (unknown) unresolved.push(index + 1);
@@ -281,15 +315,35 @@ export function createApp({ config, fetcher = fetch }) {
     if (ids.size > 100) throw fault(422, '匹配订单超过 100 笔，请减少本次查询的 CDK 数量。', 'TOO_MANY_ORDERS');
     const orders = ids.size ? await refreshOrders({ order_no: [...ids] }, req.session.owner) : [];
     const found = new Set(orders.map(order => order.order_no));
-    const items = matches.map(match => {
+    // Deduplicate checks and use a bounded pool; each upstream call reserves the shared budget.
+    const pending = new Map(); const site = store.settings().verificationSite;
+    const checks = matches.map((match,index) => ({ match, card: cards[index] })).filter(({match}) => !match.order_nos.length && !match.unresolved);
+    let cursor = 0;
+    await Promise.all(Array.from({ length: Math.min(4, checks.length) }, async () => {
+      while (cursor < checks.length) {
+        const {card} = checks[cursor++]; const key = crypto.hash(card);
+        if (!pending.has(key)) pending.set(key, querySiteCard(card,site));
+        await pending.get(key);
+      }
+    }));
+    const siteResults = new Map();
+    for (const [key, value] of pending) siteResults.set(key, await value);
+    const items = matches.map((match,index) => {
       const hasOrder = match.order_nos.some(id => found.has(id));
       const state = hasOrder ? 'found' : match.unresolved ? 'unresolved' : 'not_found';
       const message = match.unresolved ? '存在正在提交或结果未确认的记录，请联系商家核实，切勿重复充值。'
         : !match.order_nos.length ? '无本站关联记录：可能尚未兑换或未通过本站提交，不能据此认定卡密未使用。'
         : match.order_nos.some(id => !found.has(id)) ? '部分关联订单未被上游返回，可能不存在或不属于当前商户，请联系商家核实。' : '';
+      const siteResult = !match.order_nos.length && !match.unresolved ? siteResults.get(crypto.hash(cards[index])) : null;
+      if (siteResult?.state === 'unused' && find.all(crypto.hash(cards[index])).some(row => row.state !== 'failed')) {
+        unresolved.push(index + 1);
+        return { ...match, unresolved: true, state: 'unresolved', message: '查询期间出现新的订单或未确认提交，请刷新并核实，切勿重复充值。' };
+      }
+      if (siteResult) return { ...match, ...siteResult };
       return { ...match, state, ...(message ? { message } : {}) };
     });
-    res.json({ orders, notFound, unresolved, items });
+    const notFound = items.filter(item => ['not_found','invalid_or_foreign'].includes(item.state)).map(item => item.index);
+    res.json({ orders, notFound, unresolved: unresolved.sort((a,b)=>a-b), items });
   });
   routes.get('/api/orders', (req, res) => {
     const rows = db.prepare('SELECT payload FROM orders WHERE owner=? ORDER BY created DESC LIMIT 100').all(req.session.owner);

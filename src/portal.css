@@ -87,6 +87,10 @@ body { background: #f6f9fd; }
 .query-modes { display: flex; gap: 4px; padding: 4px; margin-bottom: 16px; border: 1px solid #e0e6ef; border-radius: 8px; background: #f0f3f8; width: fit-content; max-width: 100%; }
 .query-modes button { padding: 7px 18px; font-size: 14px; font-weight: 600; background: transparent; color: #495568; border-radius: 5px; }
 .query-modes button.selected { background: #fff; color: #2454d9; box-shadow: 0 1px 5px #253d5910; }
+.query-recognized { margin-top:8px; color:#2454d9; font-size:13px; font-weight:600; }
+.query-actions { display:flex; gap:10px; margin-top:16px; }
+.query-actions .secondary, .query-actions .primary { flex:1; min-width:0; }
+.portal-shell .query-actions .primary { margin:0; }
 .query-input-block { padding: 15px 0; border-top: 1px solid #e0e6ef; }
 .query-input-block:first-of-type { margin-top: 12px; }
 .query-input-heading { display: flex; align-items: center; gap: 10px; min-width: 0; }
@@ -96,6 +100,32 @@ body { background: #f6f9fd; }
 .query-item-message { margin-top: 8px; color: #526176; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .query-missing-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 9px; }
 .query-input-block .order-item { margin-top: 10px; }
+.card-query-layout { display:grid; grid-template-columns:minmax(250px,0.38fr) minmax(0,0.62fr); align-items:start; gap:16px; margin-top:16px; }
+.card-query-panel { min-width:0; background:#fff; border:1px solid #e0e6ef; border-radius:9px; padding:22px 24px; box-shadow:0 10px 28px #243d5c0a; }
+.card-query-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:5px; }
+.card-query-heading h2, .card-query-status h2 { font-size:19px; line-height:1.4; color:#172033; }
+.card-query-panel .section-kicker { font-size:12px; letter-spacing:0; color:#526176; }
+.card-query-counts { display:flex; flex-wrap:wrap; gap:7px; margin:14px 0; }
+.card-query-counts span { padding:5px 8px; background:#f2f5fa; border:1px solid #e2e8f1; border-radius:6px; color:#455369; font-size:12px; }
+.card-query-counts b { color:#172033; }
+.card-query-list { display:grid; gap:8px; max-height:480px; overflow-y:auto; padding-right:2px; }
+.card-query-choice { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; width:100%; padding:12px; background:#fff; border:1px solid #dce4ef; border-left:3px solid #95a7c2; border-radius:6px; text-align:left; }
+.card-query-choice.selected { border-color:#16a36f; background:#edf9f3; }
+.card-query-choice code { flex:1 1 100%; color:#1d2b3e; overflow-wrap:anywhere; font-size:13px; font-weight:600; }
+.card-query-status { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:16px; margin-top:8px; border:1px solid #dbe5f1; border-left:3px solid #7c91b1; border-radius:7px; background:#f5f8fc; }
+.card-query-status.success, .card-query-status.unused { background:#ecfaf3; border-color:#9bdcba; border-left-color:#16a36f; }
+.card-query-status.failed { background:#fff4f3; border-color:#f3cfca; border-left-color:#c95242; }
+.card-query-status.attention, .card-query-status.pending { background:#fff9ed; border-color:#f2dfb9; border-left-color:#d49b36; }
+.badge.unused { color:#16744e; background:#e5f8ec; }
+.card-query-code { display:grid; gap:4px; margin-top:15px; padding:12px; border:1px solid #e1e7ef; background:#f8fafd; border-radius:6px; font-size:13px; }
+.card-query-code b, .site-order-detail dt { color:#526176; }
+.card-query-code code { overflow-wrap:anywhere; color:#172033; }
+.card-query-plan { margin-top:12px; color:#344055; font-size:14px; }
+.site-order-detail { margin-top:14px; padding:15px; border:1px solid #e1e7ef; border-radius:7px; background:#f8fafd; }
+.site-order-detail dl { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px 20px; margin:15px 0 0; font-size:13px; }
+.site-order-detail dd { margin:4px 0 0; overflow-wrap:anywhere; color:#172033; }
+.card-query-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:16px; }
+.card-query-actions .secondary { min-height:36px; padding:7px 12px; font-size:13px; }
 .provider-tabs { display: flex; padding: 4px; background: #f0f3f8; border-radius: 8px; width: fit-content; margin: 0 auto 20px; }
 .provider-tabs .selected { background: #e3f5f6; color: #2454d9; border: 1px solid #c2deea; border-radius: 6px; font-size: 14px; font-weight: 650; padding: 7px 34px; }
 .subscription-form .field-heading { margin-bottom: 9px; }
@@ -178,4 +208,7 @@ body { background: #f6f9fd; }
   .subscription-details { grid-template-columns: 1fr; gap: 9px; }
   .subscription-result-title h2 { font-size: 21px; }
   .subscription-result-title { gap: 10px; }
+  .card-query-layout { grid-template-columns:1fr; }
+  .card-query-panel { padding:18px; }
+  .card-query-list { max-height:260px; }
 }

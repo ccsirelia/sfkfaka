@@ -28,6 +28,7 @@ async function fixture(t, fetchOverride) {
   const fetcher = async (url, options) => {
     const body = JSON.parse(options.body); calls.push({ url, options, body });
     if (fetchOverride) return fetchOverride(url, options, { calls, orders, idempotency });
+    if (url.includes('/api/v2/sites/') && url.endsWith('/lookup')) return Response.json({detail:'卡密无效或不属于本站，请检查输入或联系商家'},{status:400});
     if (url.endsWith('/preview')) return Response.json({ plan: 'plus', plan_label: 'Plus' });
     if (url.endsWith('/direct')) {
       const key = options.headers['Idempotency-Key'];
@@ -210,12 +211,81 @@ test('CDK 批量为每个输入保留对应结果，未关联及未确认记录�
   const unknown='UNKNOWN-CARD-FOR-BATCH';const absent='UNUSED-OR-NON-SITE-CARD';
   f.store.db.prepare('INSERT INTO submissions VALUES(?,?,?,?,?,?,?,?)').run(randomUUID(),owner,'digest',security(f.config).hash(unknown),'unknown-account','unknown',null,Date.now());
   const r=await c.send('post','/kmdh/api/orders/query-by-card',{cardKey:[p.cardKey,unknown,absent,p.cardKey]}).expect(200);
-  assert.deepEqual(r.body.items.map(item=>item.state),['found','unresolved','not_found','found']);
+  assert.deepEqual(r.body.items.map(item=>item.state),['found','unresolved','invalid_or_foreign','found']);
   assert.deepEqual(r.body.items.map(item=>item.index),[1,2,3,4]);
   assert.deepEqual(r.body.unresolved,[2]);assert.deepEqual(r.body.notFound,[3]);
   assert.deepEqual(r.body.items[0].order_nos,[id]);assert.deepEqual(r.body.items[3].order_nos,[id]);
   for(const card of [p.cardKey,unknown,absent])assert.equal(JSON.stringify(r.body).includes(card),false);
   assert.equal(f.store.db.prepare("SELECT COUNT(*) AS n FROM submissions WHERE state='unknown'").get().n,1);
+});
+
+test('本站无关联且上游任务为空、预览通过的卡密标为未使用，重复输入只查一次',async t=>{
+  const f=await fixture(t,(url)=>{
+    if(url.endsWith('/lookup'))return Response.json({job:null,message:'此卡密尚未提交充值'});
+    if(url.endsWith('/preview'))return Response.json({plan:'plus',plan_label:'Plus'});
+    throw new Error('unexpected endpoint');
+  });const c=await f.client();const card=`UNUSED-${randomUUID()}`;
+  const r=await c.send('post','/kmdh/api/orders/query-by-card',{cardKey:[card,card]}).expect(200);
+  assert.deepEqual(r.body.items.map(item=>item.state),['unused','unused']);
+  assert.deepEqual(r.body.notFound,[]);
+  assert.equal(r.body.items[0].plan_label,'Plus');assert.equal(f.calls.length,2);
+  assert.ok(f.calls[0].url.endsWith('/sites/test-site/lookup'));assert.ok(f.calls[1].url.endsWith('/sites/test-site/preview'));
+  assert.equal(f.calls[0].options.headers['X-API-Key'],undefined);
+  assert.equal(JSON.stringify(r.body).includes(card),false);
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM submissions').get().n,0);
+});
+
+test('查询期间出现新订单时不显示未使用，提示刷新核实',async t=>{
+  let releasePreview, notifyPreview;const previewStarted=new Promise(resolve=>{notifyPreview=resolve;});
+  const previewGate=new Promise(resolve=>{releasePreview=resolve;});
+  const f=await fixture(t,async (url)=>{
+    if(url.endsWith('/lookup'))return Response.json({job:null});
+    if(url.endsWith('/preview')){notifyPreview();await previewGate;return Response.json({plan:'plus'});}
+    if(url.endsWith('/direct'))return Response.json({code:0,data:{order_no:randomUUID(),status:'pending'}},{status:201});
+    throw new Error('unexpected endpoint');
+  });const c=await f.client();const p=payload();
+  const lookup=c.send('post','/kmdh/api/orders/query-by-card',{cardKey:p.cardKey}).then(result=>result);
+  await previewStarted;
+  await c.send('post','/kmdh/api/orders',p,{'Idempotency-Key':randomUUID()}).expect(201);
+  releasePreview();const result=await lookup;
+  assert.equal(result.status,200);assert.equal(result.body.items[0].state,'unresolved');
+  assert.match(result.body.items[0].message,/查询期间/);assert.deepEqual(result.body.unresolved,[1]);
+});
+
+test('旧兑换站任务按 CDK 查询并过滤凭据，人工核验不能当失败或未使用',async t=>{
+  let status='succeeded';
+  const f=await fixture(t,()=>Response.json({job:{job_id:'TASK-test-history',status,account_email:'history@example.invalid',plan:'plus',created_at:'2026-10-30 18:34:33',accessToken:'PRIVATE-SESSION-SECRET',cardNumber:'4242424242424242',...(status==='failed'?{subscription_verification_state:'needs_attention'}:{})}}));
+  const c=await f.client();const card=`OLD-${randomUUID()}`;
+  const first=await c.send('post','/kmdh/api/orders/query-by-card',{cardKey:card}).expect(200);
+  assert.equal(first.body.items[0].state,'site_order');assert.equal(first.body.items[0].site_order.status,'succeeded');
+  assert.equal(first.body.items[0].message,undefined);
+  assert.deepEqual(first.body.notFound,[]);
+  assert.equal(first.body.items[0].site_order.job_id,'TASK-test-history');assert.equal(first.body.items[0].site_order.email,'history@example.invalid');
+  for(const secret of [card,'PRIVATE-SESSION-SECRET','4242424242424242'])assert.equal(JSON.stringify(first.body).includes(secret),false);
+  assert.equal(f.calls.length,1);assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM orders').get().n,0);
+  status='failed';const manual=await c.send('post','/kmdh/api/orders/query-by-card',{cardKey:card}).expect(200);
+  assert.equal(manual.body.items[0].site_order.status,'manual_review');
+});
+
+test('上游合并拒绝、预览不可用、异常响应不会被误标为未使用',async t=>{
+  let mode='invalid';
+  const f=await fixture(t,(url)=>{
+    if(mode==='invalid')return Response.json({detail:'卡密无效或不属于本站，请检查输入或联系商家'},{status:400});
+    if(mode==='unavailable')return url.endsWith('/lookup')?Response.json({job:null}):Response.json({detail:'已停用'},{status:400});
+    if(mode==='malformed')return Response.json({message:'无 job 字段'});
+    if(mode==='outage')throw new Error('timeout');
+    return Response.json({job:{job_id:'TASK-id',status:'unrecognized'}});
+  });const c=await f.client();const card=`SAMPLE-${randomUUID()}`;
+  for(const [input,expected] of [['invalid','invalid_or_foreign'],['unavailable','unavailable'],['malformed','error'],['outage','error'],['unknown_status','site_order']]){
+    mode=input;const r=await c.send('post','/kmdh/api/orders/query-by-card',{cardKey:card}).expect(200);
+    assert.equal(r.body.items[0].state,expected);assert.notEqual(r.body.items[0].state,'unused');
+    if (input==='unknown_status') assert.equal(r.body.items[0].site_order.status,'unknown');
+  }
+});
+
+test('旧平台 TASK 任务号获得明确提示，不当作 UUID 请求商户 API',async t=>{
+  const f=await fixture(t);const c=await f.client();const r=await c.send('post','/kmdh/api/orders/query',{order_no:['TASK-571c952c8fa21b4']}).expect(200);
+  assert.equal(r.body.items[0].state,'invalid');assert.match(r.body.items[0].message,/任务号/);assert.equal(f.calls.length,0);
 });
 
 test('CDK 查询通过既有摘要关联订单，按订单号刷新且不返回或保存明文卡密',async t=>{
@@ -240,14 +310,14 @@ test('完整 CDK 可跨浏览器查询及批量匹配，查询不转移订单归
   assert.equal(allowed.body.orders[0].order_no,second.body.order.order_no);
   const result=await c.send('post','/kmdh/api/orders/query-by-card',{cardKey:[own.cardKey,foreign.cardKey,'MISSING-CARD']}).expect(200);
   assert.deepEqual(result.body.notFound,[3]);assert.equal(result.body.orders.length,2);
-  assert.deepEqual(f.calls.at(-1).body,{order_no:[first.body.order.order_no,second.body.order.order_no]});
+  assert.deepEqual(f.calls.findLast(call=>call.url===`${UPSTREAM}/third-party/orders/query`).body,{order_no:[first.body.order.order_no,second.body.order.order_no]});
   assert.deepEqual((await viewer.agent.get('/kmdh/api/orders').expect(200)).body.orders,[]);
   assert.deepEqual((await c.agent.get('/kmdh/api/orders').expect(200)).body.orders.map(o=>o.order_no),[first.body.order.order_no]);
   assert.deepEqual((await other.agent.get('/kmdh/api/orders').expect(200)).body.orders.map(o=>o.order_no),[second.body.order.order_no]);
   const before=f.calls.length;
   const partial=await viewer.send('post','/kmdh/api/orders/query-by-card',{cardKey:foreign.cardKey.slice(0,-1)}).expect(200);
   assert.deepEqual(partial.body.orders,[]);assert.deepEqual(partial.body.notFound,[1]);assert.deepEqual(partial.body.unresolved,[]);
-  assert.equal(partial.body.items[0].state,'not_found');assert.equal(f.calls.length,before);
+  assert.equal(partial.body.items[0].state,'invalid_or_foreign');assert.equal(f.calls.length,before+1);
 });
 
 test('结果未确认的 CDK 查询返回核实提示，保留锁且不创建或重试订单',async t=>{
