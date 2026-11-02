@@ -114,14 +114,48 @@ test('并发重复点击只有一个请求进入上游',async t=>{
   await c.send('post','/kmdh/api/orders',p,{'Idempotency-Key':key}).expect(409);release();
   assert.equal((await first).status,201);assert.equal(f.calls.length,1);
 });
-test('前台订单按浏览器隔离，管理员可查询商户订单',async t=>{
+test('完整订单号可跨浏览器直接查询，浏览器订单列表和原归属仍隔离',async t=>{
   const f=await fixture(t);const c=await f.client();const other=await f.client();
   const created=await c.send('post','/kmdh/api/orders',payload(),{'Idempotency-Key':randomUUID()}).expect(201);
   const order_no=created.body.order.order_no;
-  await other.send('post','/kmdh/api/orders/query',{order_no}).expect(404);
+  await other.send('post','/kmdh/api/orders/query',{order_no}).expect(200);
   assert.equal((await other.agent.get('/kmdh/api/orders').expect(200)).body.orders.length,0);
   await c.send('post','/kmdh/api/orders/query',{order_no}).expect(200);
   await f.admin.send('post','/kmdh/api/orders/query',{order_no}).expect(200);
+});
+
+test('前台和后台均可直接查询没有本站记录的历史订单，使用后端 API Key',async t=>{
+  const f=await fixture(t);const c=await f.client();
+  const first=randomUUID();const second=randomUUID();
+  f.orders.set(first,{order_no:first,status:'success',email:'history@example.invalid',accessToken:'UPSTREAM-PRIVATE-TOKEN'});
+  f.orders.set(second,{order_no:second,status:'pending_verification',payment_confirmed:true,subscription_verification_state:'needs_attention'});
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM orders').get().n,0);
+  const visitor=await c.send('post','/kmdh/api/orders/query',{order_no:first}).expect(200);
+  assert.equal(visitor.body.orders[0].order_no,first);assert.equal(visitor.body.orders[0].status,'success');
+  assert.equal(f.calls[0].url,`${UPSTREAM}/third-party/orders/query`);
+  assert.deepEqual(f.calls[0].body,{order_no:first});assert.equal(f.calls[0].options.headers['X-API-Key'],'test-api-key-private-123');
+  assert.equal(JSON.stringify(visitor.body).includes('UPSTREAM-PRIVATE-TOKEN'),false);
+  assert.equal(JSON.stringify(visitor.body).includes('test-api-key-private-123'),false);
+  assert.equal(f.store.db.prepare('SELECT order_no FROM orders WHERE order_no=?').get(second),undefined);
+  const admin=await f.admin.send('post','/kmdh/api/orders/query',{order_no:second}).expect(200);
+  assert.equal(admin.body.orders[0].order_no,second);assert.equal(admin.body.orders[0].subscription_verification_state,'needs_attention');
+  assert.equal(f.calls.length,2);assert.ok(f.calls.every(call=>call.url.endsWith('/orders/query')));
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM submissions').get().n,0);
+});
+
+test('历史订单批量查询只接收上游匹配结果，空结果不伪造订单且校验保护仍有效',async t=>{
+  const f=await fixture(t);const c=await f.client();const found=randomUUID();const missing=randomUUID();
+  f.orders.set(found,{order_no:found,status:'processing'});
+  const result=await c.send('post','/kmdh/api/orders/query',{order_no:[missing,found,found]}).expect(200);
+  assert.deepEqual(result.body.orders.map(o=>o.order_no),[found,found]);
+  assert.deepEqual(f.calls.at(-1).body,{order_no:[missing,found,found]});
+  const empty=await c.send('post','/kmdh/api/orders/query',{order_no:[missing]}).expect(200);assert.deepEqual(empty.body.orders,[]);
+  assert.equal(f.store.db.prepare('SELECT order_no FROM orders WHERE order_no=?').get(missing),undefined);
+  const before=f.calls.length;
+  await c.send('post','/kmdh/api/orders/query',{order_no:'invalid'}).expect(422);
+  await c.agent.post('/kmdh/api/orders/query').send({order_no:found}).expect(403);
+  await c.send('post','/kmdh/api/orders/query',{order_no:found},{Origin:'https://evil.example'}).expect(403);
+  assert.equal(f.calls.length,before);
 });
 test('批量查询最多 100 条，保留重复顺序并使用 order_no',async t=>{
   const f=await fixture(t);const c=await f.client();const created=await c.send('post','/kmdh/api/orders',payload(),{'Idempotency-Key':randomUUID()}).expect(201);

@@ -247,10 +247,7 @@ export function createApp({ config, fetcher = fetch }) {
   }
   routes.post('/api/orders/query', async (req, res) => {
     const input = parse(querySchema, req.body);
-    const ids = Array.isArray(input.order_no) ? input.order_no : [input.order_no];
-    if (!isAdmin(req)) {
-      for (const id of ids) if (!db.prepare('SELECT order_no FROM orders WHERE order_no=? AND owner=?').get(id, req.session.owner)) throw fault(404, '未找到当前浏览器的订单，请核对订单号，跨设备查询请联系商家', 'ORDER_NOT_FOUND');
-    }
+    // A complete order UUID can be queried across devices; the provider's API Key determines merchant access.
     const orders = await refreshOrders(input, req.session.owner);
     res.json({ orders });
   });
