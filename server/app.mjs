@@ -256,10 +256,10 @@ export function createApp({ config, fetcher = fetch }) {
     const cards = Array.isArray(input.cardKey) ? input.cardKey : [input.cardKey];
     const find = db.prepare(`SELECT s.state, o.order_no FROM submissions s
       LEFT JOIN orders o ON o.order_no=s.order_no AND o.owner=s.owner
-      WHERE s.card_hash=? AND s.owner=? ORDER BY s.created DESC`);
+      WHERE s.card_hash=? ORDER BY s.created DESC`);
     const ids = new Set(); const notFound = []; const unresolved = [];
     cards.forEach((card, index) => {
-      const rows = find.all(crypto.hash(card), req.session.owner);
+      const rows = find.all(crypto.hash(card));
       if (!rows.length) notFound.push(index + 1);
       for (const row of rows) if (row.order_no) ids.add(row.order_no);
       if (rows.some(row => !row.order_no && ['submitting', 'unknown'].includes(row.state))) unresolved.push(index + 1);

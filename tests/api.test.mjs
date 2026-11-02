@@ -178,25 +178,33 @@ test('CDK 查询通过既有摘要关联订单，按订单号刷新且不返回�
   for(const name of readdirSync(f.config.dataDir))assert.equal(readFileSync(path.join(f.config.dataDir,name)).includes(Buffer.from(p.cardKey)),false);
 });
 
-test('CDK 查询保持浏览器隔离，混合批量只查询自己的订单',async t=>{
+test('完整 CDK 可跨浏览器查询及批量匹配，查询不转移订单归属或开放订单列表',async t=>{
   const f=await fixture(t);const c=await f.client();const other=await f.client();const own=payload();const foreign=payload();
   const first=await c.send('post','/kmdh/api/orders',own,{'Idempotency-Key':randomUUID()}).expect(201);
-  await other.send('post','/kmdh/api/orders',foreign,{'Idempotency-Key':randomUUID()}).expect(201);
-  const before=f.calls.length;
-  const denied=await c.send('post','/kmdh/api/orders/query-by-card',{cardKey:foreign.cardKey}).expect(200);
-  assert.deepEqual(denied.body,{orders:[],notFound:[1],unresolved:[]});assert.equal(f.calls.length,before);
+  const second=await other.send('post','/kmdh/api/orders',foreign,{'Idempotency-Key':randomUUID()}).expect(201);
+  const viewer=await f.client();
+  const allowed=await viewer.send('post','/kmdh/api/orders/query-by-card',{cardKey:foreign.cardKey}).expect(200);
+  assert.deepEqual(allowed.body.notFound,[]);assert.deepEqual(allowed.body.unresolved,[]);
+  assert.equal(allowed.body.orders[0].order_no,second.body.order.order_no);
   const result=await c.send('post','/kmdh/api/orders/query-by-card',{cardKey:[own.cardKey,foreign.cardKey,'MISSING-CARD']}).expect(200);
-  assert.deepEqual(result.body.notFound,[2,3]);assert.equal(result.body.orders.length,1);
-  assert.deepEqual(f.calls.at(-1).body,{order_no:[first.body.order.order_no]});
+  assert.deepEqual(result.body.notFound,[3]);assert.equal(result.body.orders.length,2);
+  assert.deepEqual(f.calls.at(-1).body,{order_no:[first.body.order.order_no,second.body.order.order_no]});
+  assert.deepEqual((await viewer.agent.get('/kmdh/api/orders').expect(200)).body.orders,[]);
+  assert.deepEqual((await c.agent.get('/kmdh/api/orders').expect(200)).body.orders.map(o=>o.order_no),[first.body.order.order_no]);
+  assert.deepEqual((await other.agent.get('/kmdh/api/orders').expect(200)).body.orders.map(o=>o.order_no),[second.body.order.order_no]);
+  const before=f.calls.length;
+  const partial=await viewer.send('post','/kmdh/api/orders/query-by-card',{cardKey:foreign.cardKey.slice(0,-1)}).expect(200);
+  assert.deepEqual(partial.body,{orders:[],notFound:[1],unresolved:[]});assert.equal(f.calls.length,before);
 });
 
 test('结果未确认的 CDK 查询返回核实提示，保留锁且不创建或重试订单',async t=>{
-  const f=await fixture(t,()=>{throw new Error('simulated timeout');});const c=await f.client();const p=payload();
-  await c.send('post','/kmdh/api/orders',p,{'Idempotency-Key':randomUUID()}).expect(504);
+  const f=await fixture(t,()=>{throw new Error('simulated timeout');});const c=await f.client();const other=await f.client();const p=payload();const key=randomUUID();
+  await c.send('post','/kmdh/api/orders',p,{'Idempotency-Key':key}).expect(504);
   const before=f.calls.length;
-  const r=await c.send('post','/kmdh/api/orders/query-by-card',{cardKey:p.cardKey}).expect(200);
+  const r=await other.send('post','/kmdh/api/orders/query-by-card',{cardKey:p.cardKey}).expect(200);
   assert.deepEqual(r.body,{orders:[],notFound:[],unresolved:[1]});assert.equal(f.calls.length,before);
   assert.equal(f.store.db.prepare("SELECT COUNT(*) AS n FROM submissions WHERE state='unknown'").get().n,1);
+  await other.send('post','/kmdh/api/card-keys/recover',{cardKey:p.cardKey,submissionKey:key}).expect(404);
   await c.send('post','/kmdh/api/orders',p,{'Idempotency-Key':randomUUID()}).expect(409);
 });
 

@@ -184,7 +184,7 @@ function OrdersPage() {
       const d=await api(endpoint,{method:'POST',body});setOrders(d.orders);
       const notes=[];
       if(d.unresolved?.length)notes.push(`第 ${d.unresolved.join('、')} 张 CDK 有正在提交或结果未确认的记录。请保留原提交标识并联系商家核实，切勿重复充值。`);
-      if(d.notFound?.length)notes.push(`第 ${d.notFound.join('、')} 张 CDK 未找到当前浏览器在本站的提交记录。跨设备或非本站记录可改用完整订单号查询；未查到不代表卡密未使用。`);
+      if(d.notFound?.length)notes.push(`第 ${d.notFound.join('、')} 张 CDK 未找到本站关联的提交记录。请核对完整卡密，或使用订单号查询；未查到不代表卡密未使用。`);
       setNotice(notes.join(' '));
       if(!d.orders.length&&!notes.length)setError('暂未查询到匹配订单，请联系商家核实，勿据此重复充值。');
     }catch(e){setError(e.code==='RESULT_UNKNOWN'?'暂时无法查询订单，请稍后重试；查询失败不代表订单不存在。':e.message);}
@@ -193,13 +193,13 @@ function OrdersPage() {
   return <div className="workspace"><main className="main-column"><section className="redeem-card query-card"><form onSubmit={query}>
     <div className="query-modes" role="tablist" aria-label="订单查询方式">{[['card','按 CDK 查询'],['order','按订单号查询']].map(([id,label])=><button key={id} type="button" role="tab" aria-selected={mode===id} disabled={busy} className={mode===id?'selected':''} onClick={()=>{setMode(id);setInput('');setError('');setNotice('');setOrders([]);}}>{label}</button>)}</div>
     <label htmlFor="order-search" className="input-label">{mode==='card'?'CDK 卡密':'订单号'} <span>支持单个 / 批量</span></label><textarea id="order-search" rows={3} maxLength={mode==='card'?6500:4000} autoComplete="off" spellCheck="false" disabled={busy} value={input} onChange={e=>setInput(e.target.value)} placeholder={mode==='card'?'输入兑换时使用的 CDK，多张卡密每行一张，最多 50 张':'粘贴创建成功后获得的完整订单 UUID，多条使用换行分隔，最多 100 条'}/>
-    <p className="field-hint">{mode==='card'?'CDK 仅匹配当前浏览器在本站提交的订单，每次最多 50 张。跨设备请使用完整订单号查询。':'直接通过 API 查询当前商户的历史订单，无需本机浏览器记录，每次最多 100 条。请妥善保管完整订单号。'}</p><Alert>{error}</Alert>{notice&&<Alert type="warning">{notice}</Alert>}<button className="primary" disabled={busy||!input.trim()}>{busy?<Spinner/>:<Search size={17}/>}查询订单</button>
+    <p className="field-hint">{mode==='card'?'输入完整 CDK 即可跨浏览器、跨设备查询本站关联订单，每次最多 50 张。':'直接通过 API 查询当前商户的历史订单，无需本机浏览器记录，每次最多 100 条。请妥善保管完整订单号。'}</p><Alert>{error}</Alert>{notice&&<Alert type="warning">{notice}</Alert>}<button className="primary" disabled={busy||!input.trim()}>{busy?<Spinner/>:<Search size={17}/>}查询订单</button>
     </form></section>{orders.length?<OrderResults orders={orders} setOrders={setOrders} auto/>:!busy&&!error&&!notice?<div className="empty-state"><div className="empty-icon"><Search size={27} strokeWidth={1.4}/></div><h3>输入 CDK 或订单号，查看兑换进度</h3><p>输入 CDK 或完整订单号后显示匹配的历史订单。</p><a href={appPath('/')} className="text-link">前往兑换中心<ArrowRight size={15}/></a></div>:null}</main></div>;
 }
 
 const FAQ = [
   ['没有浏览器记录的历史订单可以查询吗？', '可以。选择按订单号查询，输入创建成功时获得的完整订单 UUID，本站后端会使用商户 API Key 直接向上游查询最新状态，无需本地浏览器记录。前台与后台均支持单个或批量查询，每次最多 100 条；查询范围以当前 API Key 所属商户及上游权限为准。请妥善保管订单号，持有完整订单号的人也可以查询相应订单信息。'],
-  ['可以使用 CDK 查询订单吗？', '可以在订单查询页选择按 CDK 查询，支持单张或每行一张的批量查询，每次最多 50 张。仅支持当前浏览器通过本站提交并记录的订单；跨设备、清除 Cookie 或非本站记录请改用完整订单号查询，或联系商家。未查询到记录不代表卡密未使用，结果未确认时不要重复充值。'],
+  ['可以使用 CDK 查询订单吗？', '可以在订单查询页选择按 CDK 查询，支持单张或每行一张的批量查询，每次最多 50 张。任何人持有完整 CDK，都可以跨浏览器、跨设备查询本站已关联的订单；未在本站记录 CDK 关联的历史订单请使用完整订单号查询。未查询到记录不代表卡密未使用，结果未确认时不要重复充值。'],
   ['如何查询订阅状态？', '打开订阅查询，粘贴完整 Session JSON 或 accessToken，即可通过充值服务商实时获取套餐、有效状态、到期时间和自动续费状态。本站不保存查询凭据；查询失败不能当作没有订阅，缺失字段会显示上游未提供。'],
   ['如何获取完整的 Session？', <>先在浏览器登录需要兑换的 ChatGPT 账号，再打开 <a href="https://chatgpt.com/api/auth/session" target="_blank" rel="noopener noreferrer">chatgpt.com/api/auth/session <ExternalLink size={12}/></a>，复制页面返回的完整 JSON。需包含 user.email、account.id 和有效的 accessToken；无需向本站提供账号密码。</>],
   ['批量兑换需要什么格式？', <>先输入或导入卡密，每行一张。全部验证通过后，按卡密的相同顺序输入 Session，每行一个完整 JSON，也可导入 .txt 文件或 Session JSON 数组。每批最多 50 组，同一卡密及账号不能重复。</>],
@@ -217,7 +217,7 @@ function HelpPage({ settings }) {
     <nav className="help-tabs" aria-label="帮助分类">{[['faq','常见问题'],['terms','兑换须知'],['privacy','隐私与安全']].map(([id,label])=><button key={id} type="button" className={section===id?'selected':''} aria-current={section===id?'page':undefined} onClick={()=>selectSection(id)}>{label}</button>)}</nav>
     {section==='faq'&&<section className="redeem-card faq"><div className="card-heading"><div><span className="section-kicker">GOOD TO KNOW</span><h2>常见问题</h2></div><CircleHelp size={25} strokeWidth={1.5}/></div>{FAQ.map(([q,a],i)=><details key={q} open={i===0}><summary>{q}<ChevronDown size={17}/></summary><div>{a}</div></details>)}</section>}
     {section==='terms'&&<section id="terms" className="info-section"><span className="section-kicker">BEFORE YOU REDEEM</span><h2>兑换须知</h2><p>请确认卡密来源、兑换目标及账号邮箱正确。兑换成功以订单查询最终结果为准；订单处于处理中或待核验时，不得重复充值。银行卡直充仅在商户后台开放，可能产生实际支付和商户积分消耗，管理员应确认套餐及地区配置后再提交。</p><p>本站不提供账号出售或凭据共享服务。具体商品、退款及售后约定以向您提供卡密的商家说明为准。{settings.supportText}</p></section>}
-    {section==='privacy'&&<section id="privacy" className="info-section privacy-info"><ShieldCheck size={28}/><div><span className="section-kicker">YOUR PRIVACY MATTERS</span><h2>隐私与安全</h2><p>Session 会通过本站后端转交给充值服务商（admin-lm.zdhxylc.shop）完成兑换或订阅查询。订阅查询只转发 accessToken 和必要的账号身份字段，不转发 sessionToken；查询结果只在当前页面展示。本站不将 Session、银行卡完整卡号或 CVV 写入数据库、浏览器持久存储和业务日志；内存中的输入会在成功提交后清除。服务商如何保存处理凭据，请向商家核实。</p><p>本站会保存加密的必要订单信息（包括订单号、邮箱、状态）、去重摘要及最小化操作审计，用于查询和处理异常。默认保留至运营方按实际需要清理；浏览器身份 Cookie 有效期 30 天，后台登录权限有效期 8 小时。按订单号查询不受浏览器身份限制，持有完整订单号的人可查询当前商户对应订单的状态及必要信息，请勿公开订单号。按 CDK 查询仍仅匹配当前浏览器的本站提交记录；完整订单列表仅提供给相应浏览器及管理员。提交标识摘要保存在当前标签页会话存储中，用于安全重试。</p><p>生产部署须启用 HTTPS。请勿在公共设备留存凭据，完成后关闭相关页面；如怀疑 Session 泄露，请及时退出账号并撤销相关会话。</p></div></section>}
+    {section==='privacy'&&<section id="privacy" className="info-section privacy-info"><ShieldCheck size={28}/><div><span className="section-kicker">YOUR PRIVACY MATTERS</span><h2>隐私与安全</h2><p>Session 会通过本站后端转交给充值服务商（admin-lm.zdhxylc.shop）完成兑换或订阅查询。订阅查询只转发 accessToken 和必要的账号身份字段，不转发 sessionToken；查询结果只在当前页面展示。本站不将 Session、银行卡完整卡号或 CVV 写入数据库、浏览器持久存储和业务日志；内存中的输入会在成功提交后清除。服务商如何保存处理凭据，请向商家核实。</p><p>本站会保存加密的必要订单信息（包括订单号、邮箱、状态）、去重摘要及最小化操作审计，用于查询和处理异常。默认保留至运营方按实际需要清理；浏览器身份 Cookie 有效期 30 天，后台登录权限有效期 8 小时。按订单号查询不受浏览器身份限制，持有完整订单号的人可查询当前商户对应订单的状态及必要信息，请勿公开订单号。持有完整 CDK 的人也可跨浏览器、跨设备查询本站关联订单，请妥善保管卡密。完整订单列表仅提供给相应浏览器及管理员。提交标识摘要保存在当前标签页会话存储中，用于安全重试。</p><p>生产部署须启用 HTTPS。请勿在公共设备留存凭据，完成后关闭相关页面；如怀疑 Session 泄露，请及时退出账号并撤销相关会话。</p></div></section>}
   </div></>;
 }
 
