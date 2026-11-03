@@ -413,6 +413,27 @@ test('只有 code=0 且 HTTP 成功才按成功处理，上游错误不回显秘
   const c=await f.client();const r=await c.send('post','/kmdh/api/orders',payload(),{'Idempotency-Key':randomUUID()}).expect(400);
   assert.equal(r.body.error.code,'UPSTREAM_40020');assert.ok(!JSON.stringify(r.body).includes('SHOULD-NOT-ECHO'));
 });
+test('创建被上游明确拒绝时返回具体原因',async t=>{
+  const reason='账号已有有效订阅，暂不符合本次充值条件。';
+  const f=await fixture(t,async()=>Response.json({code:40020,message:reason,data:null},{status:400}));
+  const c=await f.client();const r=await c.send('post','/kmdh/api/orders',payload(),{'Idempotency-Key':randomUUID()}).expect(400);
+  assert.equal(r.body.error.code,'UPSTREAM_40020');assert.equal(r.body.error.message,reason);
+});
+test('创建失败原因中包含提交凭据时先过滤再返回',async t=>{
+  const f=await fixture(t,async(_url,options)=>{
+    const p=JSON.parse(options.body);
+    return Response.json({code:40020,message:`账号状态不符：${p.cardKey} ${p.token.accessToken} ${p.token.sessionToken} ${p.token.user.email} ${options.headers['X-API-Key']}`,data:null},{status:400});
+  });
+  const c=await f.client();const p=payload();const r=await c.send('post','/kmdh/api/orders',p,{'Idempotency-Key':randomUUID()}).expect(400);
+  assert.match(r.body.error.message,/账号状态不符/);
+  for(const secret of [p.cardKey,p.token.accessToken,p.token.sessionToken,p.token.user.email,'test-api-key-private-123']) assert.ok(!JSON.stringify(r.body).includes(secret));
+});
+test('上游服务器错误仍按结果未确定处理并保留提交锁',async t=>{
+  const f=await fixture(t,async()=>Response.json({code:40020,message:'订单肯定失败',data:null},{status:500}));
+  const c=await f.client();const p=payload();const r=await c.send('post','/kmdh/api/orders',p,{'Idempotency-Key':randomUUID()}).expect(503);
+  assert.equal(r.body.error.code,'RESULT_UNKNOWN');assert.notEqual(r.body.error.message,'订单肯定失败');
+  await c.send('post','/kmdh/api/orders',p,{'Idempotency-Key':randomUUID()}).expect(409);
+});
 test('维护及删除密钥阻止创建，现有订单查询不受维护影响',async t=>{
   const f=await fixture(t);const c=await f.client();const created=await c.send('post','/kmdh/api/orders',payload(),{'Idempotency-Key':randomUUID()}).expect(201);
   await f.admin.send('put','/kmdh/api/admin/settings',{...f.settings,maintenance:true}).expect(200);

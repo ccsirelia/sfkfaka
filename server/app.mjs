@@ -14,6 +14,27 @@ const active = ['submitting', 'unknown', 'pending', 'processing', 'pending_verif
 const statuses = [...active, 'success', 'failed'];
 const canonical = v => JSON.stringify(v && typeof v === 'object' ? (Array.isArray(v) ? v.map(x => JSON.parse(canonical(x))) : Object.fromEntries(Object.keys(v).sort().map(k => [k, JSON.parse(canonical(v[k]))]))) : v);
 const safeText = value => typeof value === 'string' ? value.replace(/eyJ[A-Za-z0-9_.-]{20,}/g, '[已隐藏凭据]').replace(/\b\d{12,19}\b/g, '[已隐藏卡号]').slice(0, 500) : null;
+// Upstream messages are untrusted and may echo fields from the submitted request.
+function safeCreateError(value, body, apiKey, idempotencyKey) {
+  if (typeof value !== 'string' || !value.trim() || value.length > 2000) return null;
+  const secrets = [apiKey, idempotencyKey, body.cardKey, body.cardNumber];
+  function collect(input) {
+    if (!input || typeof input !== 'object') return;
+    for (const [key, item] of Object.entries(input)) {
+      if (typeof item === 'string' && /token|secret|password|credential|authorization|cookie|^email$|^id$/i.test(key)) secrets.push(item);
+      else if (item && typeof item === 'object') collect(item);
+    }
+  }
+  collect(body.token);
+  let message = value.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+  for (const secret of secrets.filter(s => typeof s === 'string' && s.length >= 4).sort((a, b) => b.length - a.length)) message = message.split(secret).join('[已隐藏]');
+  if (secrets.some(s => typeof s === 'string' && s.length > 0 && s.length < 4 && message.includes(s))) return null;
+  if (typeof body.cvv === 'string' && /^\d{3,4}$/.test(body.cvv)) message = message.replace(new RegExp(`(?<!\\d)${body.cvv}(?!\\d)`, 'g'), '[已隐藏]');
+  if (/\b(?:secret|password)\b|(?:authorization|x-api-key|access[_-]?token|session[_-]?token|api[_-]?key|cvv|cvc|card[_-]?number)\s*["']?\s*[:=]|\bbearer\s+\S+/i.test(message)) return null;
+  // Do not echo a truncated API key if the provider only returned a fragment.
+  if (typeof apiKey === 'string') for (let i = 0; i <= apiKey.length - 8; i++) if (message.includes(apiKey.slice(i, i + 8))) return null;
+  return safeText(message.trim()) || null;
+}
 function cleanOrder(data) {
   if (!data || typeof data.order_no !== 'string' || !/^[a-f\d-]{36}$/i.test(data.order_no) || !statuses.includes(data.status)) throw fault(502, '上游订单响应格式异常，请使用原提交标识重试', 'UPSTREAM_INVALID');
   const order = { order_no: data.order_no, status: data.status };
@@ -127,8 +148,9 @@ export function createApp({ config, fetcher = fetch }) {
       };
       const invalidToken = [40005,40006,40007,40008,40024,40025,40026,40027].includes(payload.code);
       const uncertain = response.status >= 500 || typeof payload.code !== 'number' || payload.code === 0;
+      const createReason = endpoint === '/third-party/orders/direct' && !uncertain ? safeCreateError(payload.message, body, apiKey, idempotencyKey) : null;
       const error = fault(response.status >= 500 ? 503 : response.status >= 400 ? response.status : 502,
-        messages[payload.code] || (invalidToken ? 'Session 无效或已过期，请重新获取完整 Session' : '上游暂时无法完成请求，请保留原提交标识并联系商家'), uncertain ? 'RESULT_UNKNOWN' : `UPSTREAM_${payload.code}`);
+        createReason || messages[payload.code] || (invalidToken ? 'Session 无效或已过期，请重新获取完整 Session' : '上游暂时无法完成请求，请保留原提交标识并联系商家'), uncertain ? 'RESULT_UNKNOWN' : `UPSTREAM_${payload.code}`);
       throw error;
     }
     return payload.data;

@@ -210,34 +210,33 @@ function SubscriptionPage({ ready }) {
   return <section className="subscription-panel"><div className="provider-tabs"><span className="selected">ChatGPT</span></div>{!result&&<form className="subscription-form" onSubmit={query}><div className="field-heading"><label className="input-label" htmlFor="subscription-session">输入 Session</label><button type="button" className="subtle-link" onClick={()=>setShow(!show)}>{show?<EyeOff size={15}/>:<Eye size={15}/>} {show?'隐藏':'显示'}</button></div><textarea id="subscription-session" rows={6} className={!show&&raw?'concealed':''} value={raw} disabled={busy} onChange={e=>{setRaw(e.target.value);setResult(null);setError('');}} autoComplete="off" spellCheck="false" maxLength={100000} placeholder="粘贴 chatgpt.com/api/auth/session 的完整 JSON，或直接粘贴 accessToken"/><p className="field-hint">通过充值服务商实时查询订阅，本站不保存 Session。<a href="https://chatgpt.com/api/auth/session" target="_blank" rel="noopener noreferrer">获取 Session（https://chatgpt.com/api/auth/session）<ArrowUpRight size={13}/></a></p><Alert>{error}</Alert><div className="subscription-actions"><button type="button" className="secondary" onClick={clear}>清空</button><button className="primary" disabled={busy||!ready||!raw.trim()}>{busy?<><Spinner/>正在查询</>:<><Search size={17}/>查询订阅</>}</button></div></form>}{result&&<section className="subscription-result" aria-live="polite"><div className="subscription-result-title"><div><span className="section-kicker">订阅信息</span><h2>{plans[result.plan.toLowerCase()]||result.plan}</h2></div><span className={`badge ${result.active?'success':'neutral'}`}>{result.active?<CheckCircle2 size={14}/>:<CircleHelp size={14}/>} {result.active?'订阅有效':'无有效订阅'}</span></div><p className="subscription-summary">{!result.active?'当前账号没有有效订阅。':result.willRenew===true?'当前订阅有效，自动续费已开启。':result.willRenew===false?'当前订阅有效，自动续费已关闭。':'当前订阅有效，自动续费状态暂未提供。'}</p><dl className="subscription-details">{[['账号邮箱',result.email||'上游未提供'],['到期时间',date(result.expiresAt)],['订阅开始',date(result.startedAt)],['自动续费',result.willRenew===null?'上游未提供':result.willRenew?'已开启':'已关闭'],['计费周期',({month:'月付',monthly:'月付',year:'年付',yearly:'年付',annual:'年付'})[result.billingPeriod]||result.billingPeriod||'上游未提供'],['支付渠道',({web:'网页支付',stripe:'网页支付',apple:'App Store',ios:'App Store',google:'Google Play'})[result.paymentChannel]||result.paymentChannel||'上游未提供']].map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl><p className="field-hint">查询时间：{date(result.checkedAt)}（北京时间）</p><button type="button" className="primary query-another" onClick={clear}>查询其他账号</button></section>}</section>;
 }
 function OrdersPage() {
-  const [mode,setMode]=useState('card'); const [input,setInput]=useState(''); const [orders,setOrders]=useState([]); const [items,setItems]=useState(null); const [queryInputs,setQueryInputs]=useState([]); const [busy,setBusy]=useState(false); const [error,setError]=useState(''); const lock=useRef(false);
+  const [input,setInput]=useState(''); const [orders,setOrders]=useState([]); const [items,setItems]=useState(null); const [queryInputs,setQueryInputs]=useState([]); const [busy,setBusy]=useState(false); const [error,setError]=useState(''); const lock=useRef(false);
   async function query(e, previousInputs) {
     e?.preventDefault();if(lock.current)return;setError('');let values;
-    try {values=previousInputs||parseQueryList(input,mode);}catch(e){setError(e.message);return;}
+    try {values=previousInputs||parseQueryList(input,'card');}catch(e){setError(e.message);return;}
     lock.current=true;setBusy(true);setOrders([]);setItems(null);setQueryInputs(values);
     try {
-      const d=await api(mode==='card'?'/orders/query-by-card':'/orders/query',{method:'POST',body:mode==='card'?{cardKey:values}:{order_no:values}});
+      const d=await api('/orders/query-by-card',{method:'POST',body:{cardKey:values}});
       setOrders(d.orders);setItems(d.items);
     }catch(e){const message=e.code==='RESULT_UNKNOWN'?'暂时无法查询订单，请稍后重试；查询失败不代表订单不存在。':e.message;setError('');setItems(values.map((value,index)=>({index:index+1,state:'error',order_nos:[],message}))); }
     finally{lock.current=false;setBusy(false);}
   }
-  let recognized=0;try{if(input.trim())recognized=parseQueryList(input,mode).length;}catch{}
+  let recognized=0;try{if(input.trim())recognized=parseQueryList(input,'card').length;}catch{}
   return <div className="workspace"><main className="main-column"><section className="redeem-card query-card"><form onSubmit={query}>
-    <div className="query-modes" role="tablist" aria-label="订单查询方式">{[['card','按 CDK 查询'],['order','按订单号查询']].map(([id,label])=><button key={id} type="button" role="tab" aria-selected={mode===id} disabled={busy} className={mode===id?'selected':''} onClick={()=>{setMode(id);setInput('');setError('');setItems(null);setOrders([]);setQueryInputs([]);}}>{label}</button>)}</div>
-    <label htmlFor="order-search" className="input-label">{mode==='card'?'CDK 卡密':'订单号'} <span>支持单个 / 批量</span></label><textarea id="order-search" rows={3} maxLength={16000} autoComplete="off" spellCheck="false" disabled={busy} value={input} onChange={e=>setInput(e.target.value)} placeholder={mode==='card'?'输入兑换时使用的 CDK，支持换行、逗号或 JSON 数组，最多 50 张':'粘贴创建成功后获得的完整订单 UUID，支持换行、逗号或 JSON 数组，最多 100 条'}/>
-    <p className="field-hint">{mode==='card'?'输入完整 CDK 查询本站及上游兑换站记录，每次最多 50 张。':'直接通过 API 查询当前商户的历史订单，无需本机浏览器记录，每次最多 100 条。请妥善保管完整订单号。'}</p><Alert>{error}</Alert>{recognized>0&&<p className="query-recognized">已识别 {recognized} 条{mode==='card'?' CDK':'订单号'}</p>}<div className="query-actions"><button type="button" className="secondary" disabled={busy||!input} onClick={()=>{setInput('');setOrders([]);setItems(null);setQueryInputs([]);setError('');}}>清空查询</button><button className="primary" disabled={busy||!input.trim()}>{busy?<Spinner/>:<Search size={17}/>}批量查询</button></div>
-    </form></section>{items?(mode==='card'?<CardQueryResults items={items} orders={orders} setOrders={setOrders} inputs={queryInputs} onRefresh={()=>query(null,queryInputs)}/>:<OrderResults orders={orders} setOrders={setOrders} auto title="逐条查询结果" showRenewal={false} queryItems={items} queryInputs={queryInputs} queryMode={mode} onQueryRefresh={()=>query(null,queryInputs)}/>):!busy&&!error?<div className="empty-state"><div className="empty-icon"><Search size={27} strokeWidth={1.4}/></div><h3>输入 CDK 或订单号，查看兑换进度</h3><p>输入 CDK 或完整订单号后显示匹配的历史订单。</p><a href={appPath('/')} className="text-link">前往兑换中心<ArrowRight size={15}/></a></div>:null}</main></div>;
+    <label htmlFor="order-search" className="input-label">CDK 卡密 <span>支持单个 / 批量</span></label><textarea id="order-search" rows={3} maxLength={16000} autoComplete="off" spellCheck="false" disabled={busy} value={input} onChange={e=>setInput(e.target.value)} placeholder="输入兑换时使用的 CDK，支持换行、逗号或 JSON 数组，最多 50 张"/>
+    <p className="field-hint">输入完整 CDK 查询本站及上游兑换站记录，每次最多 50 张。</p><Alert>{error}</Alert>{recognized>0&&<p className="query-recognized">已识别 {recognized} 条 CDK</p>}<div className="query-actions"><button type="button" className="secondary" disabled={busy||!input} onClick={()=>{setInput('');setOrders([]);setItems(null);setQueryInputs([]);setError('');}}>清空查询</button><button className="primary" disabled={busy||!input.trim()}>{busy?<Spinner/>:<Search size={17}/>}批量查询</button></div>
+    </form></section>{items?<CardQueryResults items={items} orders={orders} setOrders={setOrders} inputs={queryInputs} onRefresh={()=>query(null,queryInputs)}/>:!busy&&!error?<div className="empty-state"><div className="empty-icon"><Search size={27} strokeWidth={1.4}/></div><h3>输入 CDK，查看兑换进度</h3><p>输入 CDK 后显示匹配的历史订单。</p><a href={appPath('/')} className="text-link">前往兑换中心<ArrowRight size={15}/></a></div>:null}</main></div>;
 }
 
 const FAQ = [
-  ['没有浏览器记录的历史订单可以查询吗？', '可以。选择按订单号查询，输入创建成功时获得的完整订单 UUID，本站后端会使用商户 API Key 直接向上游查询最新状态，无需本地浏览器记录。前台与后台均支持单个或批量查询，每次最多 100 条，支持换行、逗号或 JSON 数组，并为每个输入逐条显示结果；查询范围以当前 API Key 所属商户及上游权限为准。请妥善保管订单号，持有完整订单号的人也可以查询相应订单信息。'],
-  ['可以使用 CDK 查询订单吗？', '可以在订单查询页选择按 CDK 查询，支持单张及批量查询，可用换行、逗号或 JSON 数组，每次最多 50 张，每项均显示对应结果。任何人持有完整 CDK，都可以跨浏览器、跨设备查询本站关联订单，以及当前上游兑换站可查询的任务。本站无关联、上游兑换站无任务且验证通过的卡密显示未使用；无效或不属于当前兑换站的卡密显示合并提示。未查询到记录不代表卡密未使用，结果未确认时不要重复充值。'],
+  ['没有浏览器记录的历史订单可以查询吗？', '可以使用完整 CDK 跨浏览器、跨设备查询本站关联订单及当前上游兑换站可查询的任务。其他平台或兑换站的记录取决于上游接口和商户权限，如未查到请联系商家核实。'],
+  ['可以使用 CDK 查询订单吗？', '可以在订单查询页按 CDK 查询，支持单张及批量查询，可用换行、逗号或 JSON 数组，每次最多 50 张，每项均显示对应结果。任何人持有完整 CDK，都可以跨浏览器、跨设备查询本站关联订单，以及当前上游兑换站可查询的任务。本站无关联、上游兑换站无任务且验证通过的卡密显示未使用；无效或不属于当前兑换站的卡密显示合并提示。未查询到记录不代表卡密未使用，结果未确认时不要重复充值。'],
   ['如何查询订阅状态？', '打开订阅查询，粘贴完整 Session JSON 或 accessToken，即可通过充值服务商实时获取套餐、有效状态、到期时间和自动续费状态。本站不保存查询凭据；查询失败不能当作没有订阅，缺失字段会显示上游未提供。'],
   ['如何获取完整的 Session？', <>先在浏览器登录需要兑换的 ChatGPT 账号，再打开 <a href="https://chatgpt.com/api/auth/session" target="_blank" rel="noopener noreferrer">chatgpt.com/api/auth/session <ExternalLink size={12}/></a>，复制页面返回的完整 JSON。需包含 user.email、account.id 和有效的 accessToken；无需向本站提供账号密码。</>],
   ['批量兑换需要什么格式？', <>先输入或导入卡密，每行一张。全部验证通过后，按卡密的相同顺序输入 Session，每行一个完整 JSON，也可导入 .txt 文件或 Session JSON 数组。每批最多 50 组，同一卡密及账号不能重复。</>],
   ['点击提交后，是否就代表兑换成功？', '提交成功仅代表订单已受理。请保存完整订单号，并在订单查询页等待“兑换成功”的最终状态。不要因为等待时间较长重复提交。'],
   ['订单显示“待核验”应该怎么做？', '待核验既不是成功，也不是失败。请查看核验说明；如果标记需要人工核实，自动查询会停止，请联系商家。支付未确认不能被视为未扣款。此时禁止重复创建充值订单。'],
-  ['网络中断或超时了，可以重新提交吗？', '网络错误不代表订单未创建。已有订单号时先查询原订单；未取得订单号时保留原始内容，在同一浏览器标签页使用完全相同内容重试，系统会复用原提交标识。请保存回执中的提交标识；若已关闭标签页或修改内容，先联系商家核实。'],
+  ['网络中断或超时了，可以重新提交吗？', '网络错误不代表订单未创建。先通过 CDK 查询原订单；未取得订单号时保留原始内容，在同一浏览器标签页使用完全相同内容重试，系统会复用原提交标识。请保存回执中的提交标识；若已关闭标签页或修改内容，先联系商家核实。'],
   ['可以取消订单、更换卡密或查询卡密余额吗？', '当前商户 API 没有提供取消、换码、余额及套餐列表接口。本站只展示文档支持的能力，其他需求请联系商家。'],
 ];
 function HelpPage({ settings }) {
@@ -249,7 +248,7 @@ function HelpPage({ settings }) {
     <nav className="help-tabs" aria-label="帮助分类">{[['faq','常见问题'],['terms','兑换须知'],['privacy','隐私与安全']].map(([id,label])=><button key={id} type="button" className={section===id?'selected':''} aria-current={section===id?'page':undefined} onClick={()=>selectSection(id)}>{label}</button>)}</nav>
     {section==='faq'&&<section className="redeem-card faq"><div className="card-heading"><div><span className="section-kicker">GOOD TO KNOW</span><h2>常见问题</h2></div><CircleHelp size={25} strokeWidth={1.5}/></div>{FAQ.map(([q,a],i)=><details key={q} open={i===0}><summary>{q}<ChevronDown size={17}/></summary><div>{a}</div></details>)}</section>}
     {section==='terms'&&<section id="terms" className="info-section"><span className="section-kicker">BEFORE YOU REDEEM</span><h2>兑换须知</h2><p>请确认卡密来源、兑换目标及账号邮箱正确。兑换成功以订单查询最终结果为准；订单处于处理中或待核验时，不得重复充值。银行卡直充仅在商户后台开放，可能产生实际支付和商户积分消耗，管理员应确认套餐及地区配置后再提交。</p><p>本站不提供账号出售或凭据共享服务。具体商品、退款及售后约定以向您提供卡密的商家说明为准。{settings.supportText}</p></section>}
-    {section==='privacy'&&<section id="privacy" className="info-section privacy-info"><ShieldCheck size={28}/><div><span className="section-kicker">YOUR PRIVACY MATTERS</span><h2>隐私与安全</h2><p>Session 会通过本站后端转交给充值服务商（admin-lm.zdhxylc.shop）完成兑换或订阅查询。订阅查询只转发 accessToken 和必要的账号身份字段，不转发 sessionToken；查询结果只在当前页面展示。本站不将 Session、银行卡完整卡号或 CVV 写入数据库、浏览器持久存储和业务日志；内存中的输入会在成功提交后清除。服务商如何保存处理凭据，请向商家核实。</p><p>本站会保存加密的必要订单信息（包括订单号、邮箱、状态）、去重摘要及最小化操作审计，用于查询和处理异常。默认保留至运营方按实际需要清理；浏览器身份 Cookie 有效期 30 天，后台登录权限有效期 8 小时。按订单号查询不受浏览器身份限制，持有完整订单号的人可查询当前商户对应订单的状态及必要信息，请勿公开订单号。持有完整 CDK 的人也可跨浏览器、跨设备查询本站关联订单，请妥善保管卡密。完整订单列表仅提供给相应浏览器及管理员。提交标识摘要保存在当前标签页会话存储中，用于安全重试。</p><p>生产部署须启用 HTTPS。请勿在公共设备留存凭据，完成后关闭相关页面；如怀疑 Session 泄露，请及时退出账号并撤销相关会话。</p></div></section>}
+    {section==='privacy'&&<section id="privacy" className="info-section privacy-info"><ShieldCheck size={28}/><div><span className="section-kicker">YOUR PRIVACY MATTERS</span><h2>隐私与安全</h2><p>Session 会通过本站后端转交给充值服务商（admin-lm.zdhxylc.shop）完成兑换或订阅查询。订阅查询只转发 accessToken 和必要的账号身份字段，不转发 sessionToken；查询结果只在当前页面展示。本站不将 Session、银行卡完整卡号或 CVV 写入数据库、浏览器持久存储和业务日志；内存中的输入会在成功提交后清除。服务商如何保存处理凭据，请向商家核实。</p><p>本站会保存加密的必要订单信息（包括订单号、邮箱、状态）、去重摘要及最小化操作审计，用于查询和处理异常。默认保留至运营方按实际需要清理；浏览器身份 Cookie 有效期 30 天，后台登录权限有效期 8 小时。订单状态刷新接口使用订单号作为查询凭据，请勿公开订单号。持有完整 CDK 的人也可跨浏览器、跨设备查询本站关联订单，请妥善保管卡密。完整订单列表仅提供给相应浏览器及管理员。提交标识摘要保存在当前标签页会话存储中，用于安全重试。</p><p>生产部署须启用 HTTPS。请勿在公共设备留存凭据，完成后关闭相关页面；如怀疑 Session 泄露，请及时退出账号并撤销相关会话。</p></div></section>}
   </div></>;
 }
 
@@ -282,17 +281,9 @@ function Admin({ session, onSession }) {
   {tab==='orders'&&<AdminOrders initialOrders={overview?.recentOrders||[]}/>}{tab==='direct'&&<DirectForm/>}{tab==='lookup'&&<LookupForm/>}</main></div>;
 }
 function AdminOrders({initialOrders}) {
-  const [orders,setOrders]=useState(initialOrders);const [input,setInput]=useState('');const [items,setItems]=useState(null);const [queryInputs,setQueryInputs]=useState([]);const [error,setError]=useState('');const [busy,setBusy]=useState(false);const lock=useRef(false);const queried=useRef(false);
-  useEffect(()=>{if(!queried.current)setOrders(initialOrders);},[initialOrders]);
-  async function query(e, previousInputs) {
-    e?.preventDefault();if(lock.current)return;setError('');let values;
-    try{values=previousInputs||parseQueryList(input,'order');}catch(e){setError(e.message);return;}
-    queried.current=true;lock.current=true;setBusy(true);setOrders([]);setItems(null);setQueryInputs(values);
-    try{const d=await api('/orders/query',{method:'POST',body:{order_no:values}});setOrders(d.orders);setItems(d.items);}
-    catch(e){setError(e.message);setItems(values.map((value,index)=>({index:index+1,state:'error',order_nos:[],message:e.message})));}
-    finally{lock.current=false;setBusy(false);}
-  }
-  return <><form className="redeem-card admin-query" onSubmit={query}><h3>按订单号查询</h3><p>直接通过 API 查询当前商户的历史订单，每个输入均展示结果。下方默认显示本站最近 100 笔记录。</p><textarea aria-label="管理员批量订单号" rows={3} maxLength={16000} disabled={busy} value={input} onChange={e=>setInput(e.target.value)} placeholder="支持换行、逗号或 JSON 数组，最多 100 个订单号"/><Alert>{error}</Alert><button className="primary small" disabled={busy||!input.trim()}>{busy?<Spinner/>:<Search size={15}/>}查询订单</button></form>{items?<OrderResults orders={orders} setOrders={setOrders} title="逐条查询结果" queryItems={items} queryInputs={queryInputs} onQueryRefresh={()=>query(null,queryInputs)}/>:orders.length?<OrderResults orders={orders} setOrders={setOrders}/>:<div className="empty-state"><Layers size={28}/><h3>{busy?'正在查询…':'暂无订单记录'}</h3></div>}</>;
+  const [orders,setOrders]=useState(initialOrders);
+  useEffect(()=>setOrders(initialOrders),[initialOrders]);
+  return orders.length?<OrderResults orders={orders} setOrders={setOrders}/>:<div className="empty-state"><Layers size={28}/><h3>暂无订单记录</h3></div>;
 }
 
 function DirectForm(){const[raw,setRaw]=useState('');const[batch,setBatch]=useState(false);const[error,setError]=useState('');const[busy,setBusy]=useState(false);const[agreed,setAgreed]=useState(false);const[orders,setOrders]=useState([]);const[receipts,setReceipts]=useState([]);const[form,setForm]=useState({cardNumber:'',expMonth:'',expYear:'',cvv:'',country:'PH',planType:'plus'});const lock=useRef(false);
